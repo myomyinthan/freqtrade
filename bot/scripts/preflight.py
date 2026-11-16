@@ -2,6 +2,7 @@
 
 import argparse
 from contextlib import contextmanager
+import errno
 import fcntl
 import hashlib
 import json
@@ -122,16 +123,22 @@ def resolve_config(settings, strategy=STRATEGY, initial_state="running"):
 
 
 def _check_regular_unlinked(path: Path, label: str):
-    try:
-        info = path.lstat()
-    except FileNotFoundError:
-        return
+    for attempt in range(2):
+        try:
+            info = path.lstat()
+            break
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            if attempt == 0 and exc.errno == errno.ESTALE:
+                continue
+            raise
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         raise ValueError(f"{label} must be regular, unlinked files")
 
 
 def check_paper_paths(strategy=STRATEGY):
-    for directory in (PAPER_DIR.parent, PAPER_DIR, PAPER_DIR / "logs"):
+    for directory in (PAPER_DIR.parent, PAPER_DIR, PAPER_DIR / "logs", PAPER_DIR / "backups"):
         if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
             raise ValueError("paper runtime directories must be regular directories")
     for suffix in ("", "-wal", "-shm", "-journal"):

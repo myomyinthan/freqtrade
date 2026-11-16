@@ -6,6 +6,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -33,11 +34,16 @@ LOG_FILE = PAPER_DIR / LOG_REL_PATH
 API_AUTH = PAPER_DIR / API_AUTH_NAME
 GUARD_POLICY = PAPER_DIR / GUARD_POLICY_NAME
 GUARD_STATE = PAPER_DIR / GUARD_STATE_NAME
+BACKUP_DIR = PAPER_DIR / "backups"
 
 DEFAULT_MAX_HEARTBEAT_AGE = 120.0
 DEFAULT_MAX_CANDLE_AGE = 7200.0
 DEFAULT_MIN_FREE_BYTES = 1024 * 1024 * 1024
 DEFAULT_ERROR_THRESHOLD = 3
+DEFAULT_KEEP_DAILY_BACKUPS = 7
+DEFAULT_KEEP_WEEKLY_BACKUPS = 4
+
+MANAGED_BACKUP_RE = re.compile(r"^paper-(?P<stamp>\d{8}T\d{6}Z)\.sqlite$")
 
 HEARTBEAT_RE = re.compile(
     r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) - .* - INFO - "
@@ -142,8 +148,9 @@ def order_side_breakdown(path: Path) -> dict[str, int] | None:
         return {"pending_entry_orders": entries, "pending_exit_orders": exits}
 
 
-def backup(destination: Path) -> None:
-    with closing(connect_readonly(DB)) as source:
+def backup(destination: Path, source_db: Path | None = None) -> None:
+    live_db = DB if source_db is None else source_db
+    with closing(connect_readonly(live_db)) as source:
         # Reserve the filename so repeated or concurrent backups cannot replace a prior backup.
         destination.touch(mode=0o600, exist_ok=False)
         try:
@@ -155,6 +162,108 @@ def backup(destination: Path) -> None:
         except Exception:
             destination.unlink(missing_ok=True)
             raise
+
+
+def list_managed_backups(backup_dir: Path = BACKUP_DIR) -> list[tuple[datetime, Path]]:
+    if not backup_dir.is_dir():
+        return []
+    if backup_dir.is_symlink():
+        raise ValueError("backup directory must not be a symlink")
+    found = []
+    for item in backup_dir.iterdir():
+        match = MANAGED_BACKUP_RE.match(item.name)
+        if not match or item.is_symlink() or not item.is_file():
+            continue
+        stamp = datetime.strptime(match.group("stamp"), "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        found.append((stamp, item))
+    found.sort(key=lambda pair: pair[0], reverse=True)
+    return found
+
+
+def prune_managed_backups(
+    backup_dir: Path = BACKUP_DIR,
+    keep_daily: int = DEFAULT_KEEP_DAILY_BACKUPS,
+    keep_weekly: int = DEFAULT_KEEP_WEEKLY_BACKUPS,
+) -> dict:
+    if keep_daily < 1 or keep_weekly < 0:
+        raise ValueError("keep_daily must be >= 1 and keep_weekly >= 0")
+    snapshots = list_managed_backups(backup_dir)
+    if not snapshots:
+        return {"backup_dir": str(backup_dir), "kept": [], "pruned": []}
+
+    with closing(connect_readonly(snapshots[0][1])) as latest_conn:
+        if latest_conn.execute("PRAGMA quick_check").fetchone() != ("ok",):
+            raise ValueError("newest managed backup failed quick_check; aborting retention prune")
+
+    keep_names: set[str] = {snapshots[0][1].name}
+    daily_days = set()
+    weekly_weeks = set()
+    for stamp, path in snapshots:
+        day_key = stamp.date()
+        if len(daily_days) < keep_daily and day_key not in daily_days:
+            daily_days.add(day_key)
+            keep_names.add(path.name)
+        iso = stamp.isocalendar()
+        week_key = (iso.year, iso.week)
+        if len(weekly_weeks) < keep_weekly and week_key not in weekly_weeks:
+            weekly_weeks.add(week_key)
+            keep_names.add(path.name)
+
+    kept, pruned = [], []
+    for _, path in snapshots:
+        if path.name in keep_names:
+            kept.append(path.name)
+        else:
+            stem = path.name[:-len(".sqlite")]
+            for candidate in (
+                path,
+                backup_dir / f"{stem}.meta.json",
+                backup_dir / f"{path.name}-shm",
+                backup_dir / f"{path.name}-wal",
+            ):
+                candidate.unlink(missing_ok=True)
+            pruned.append(path.name)
+
+    return {"backup_dir": str(backup_dir), "kept": kept, "pruned": pruned}
+
+
+def snapshot_and_rotate_backups(
+    backup_dir: Path = BACKUP_DIR,
+    keep_daily: int = DEFAULT_KEEP_DAILY_BACKUPS,
+    keep_weekly: int = DEFAULT_KEEP_WEEKLY_BACKUPS,
+    source_db: Path | None = None,
+    now: datetime | None = None,
+) -> dict:
+    live_db = DB if source_db is None else source_db
+    if backup_dir.is_symlink():
+        raise ValueError("backup directory must not be a symlink")
+    backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    stamp_dt = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    stamp = stamp_dt.strftime("%Y%m%dT%H%M%SZ")
+    sqlite_dest = backup_dir / f"paper-{stamp}.sqlite"
+    meta_dest = backup_dir / f"paper-{stamp}.meta.json"
+
+    backup(sqlite_dest, source_db=live_db)
+    meta_payload = sanitize_value({
+        "created_at_utc": stamp_dt.isoformat(),
+        "sqlite_backup": sqlite_dest.name,
+        "sqlite_sha256": sha256_file(sqlite_dest),
+        "ledger": ledger(sqlite_dest),
+        "order_sides": order_side_breakdown(sqlite_dest),
+        "guard_health": inspect_guard(now=stamp_dt),
+    })
+    fd = os.open(meta_dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(meta_payload, stream, indent=2)
+        stream.write("\n")
+
+    retention = prune_managed_backups(backup_dir, keep_daily=keep_daily, keep_weekly=keep_weekly)
+    return {
+        "created_sqlite": str(sqlite_dest),
+        "created_metadata": str(meta_dest),
+        "sqlite_sha256": meta_payload["sqlite_sha256"],
+        "retention": retention,
+    }
 
 
 def restore_drill(backup_path: Path, isolated_dir: Path, source_db: Path | None = None) -> dict:
@@ -362,6 +471,153 @@ def probe_live_api(now: datetime | None = None) -> dict:
         "pairs": pairs,
         "last_process_ts": health.get("last_process_ts") if isinstance(health, dict) else None,
         "candles": candles,
+    }
+
+
+def _finite_float(value) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _pct_to_target(target: float | None, current: float | None) -> float | None:
+    if target is None or current is None or current <= 0:
+        return None
+    return round((target / current - 1.0) * 100.0, 2)
+
+
+def _pct_cushion_above(floor_val: float | None, current: float | None) -> float | None:
+    if floor_val is None or current is None or floor_val <= 0:
+        return None
+    return round((current / floor_val - 1.0) * 100.0, 2)
+
+
+def summarize_pair_signal_row(pair: str, strategy: str, row: dict) -> dict:
+    close = _finite_float(row.get("close"))
+    volume = _finite_float(row.get("volume"))
+    warmed_up = bool(row.get("warmed_up"))
+    base_info = {
+        "pair": pair,
+        "candle_open_utc": str(row.get("date")) if row.get("date") is not None else None,
+        "close": round(close, 4) if close is not None else None,
+        "warmed_up": warmed_up,
+        "enter_long": int(row.get("enter_long") or 0),
+        "exit_long": int(row.get("exit_long") or 0),
+    }
+
+    if strategy in ("PersonalSpotMacroBreakout", "PersonalSpotMacroBreakoutGuarded"):
+        sma120 = _finite_float(row.get("sma120"))
+        sma360 = _finite_float(row.get("sma360"))
+        slope = _finite_float(row.get("sma360_slope24"))
+        high336 = _finite_float(row.get("prior_high_336"))
+        low96 = _finite_float(row.get("prior_low_96"))
+        vol24 = _finite_float(row.get("prior_vol_sma24"))
+        conditions = {
+            "warmed_up": warmed_up,
+            "above_sma120": bool(close is not None and sma120 is not None and close > sma120),
+            "macro_sma_stacked": bool(sma120 is not None and sma360 is not None and sma120 > sma360),
+            "macro_slope_rising": bool(slope is not None and slope > 0),
+            "breakout_14d_high": bool(close is not None and high336 is not None and close > high336),
+            "volume_above_24h_avg": bool(volume is not None and vol24 is not None and volume > 0 and volume > vol24),
+        }
+        regime = (
+            "bull_macro_aligned"
+            if (conditions["above_sma120"] and conditions["macro_sma_stacked"] and conditions["macro_slope_rising"])
+            else "bear_or_neutral_cash"
+        )
+        met_count = sum(1 for passed in conditions.values() if passed)
+        return {
+            **base_info,
+            "regime": regime,
+            "entry_gates_passed": f"{met_count}/{len(conditions)}",
+            "conditions": conditions,
+            "levels": {
+                "sma120": round(sma120, 4) if sma120 is not None else None,
+                "sma360": round(sma360, 4) if sma360 is not None else None,
+                "sma360_slope24": round(slope, 4) if slope is not None else None,
+                "prior_high_336": round(high336, 4) if high336 is not None else None,
+                "prior_low_96": round(low96, 4) if low96 is not None else None,
+            },
+            "proximity_pct": {
+                "move_to_sma120_pct": _pct_to_target(sma120, close),
+                "move_to_sma360_pct": _pct_to_target(sma360, close),
+                "move_to_14d_breakout_pct": _pct_to_target(high336, close),
+                "cushion_above_4d_exit_pct": _pct_cushion_above(low96, close),
+            },
+        }
+
+    if strategy in ("PersonalSpotBreakout", "PersonalSpotBreakoutGuarded"):
+        sma200 = _finite_float(row.get("sma200"))
+        slope = _finite_float(row.get("sma200_slope24"))
+        high168 = _finite_float(row.get("prior_high_168"))
+        low72 = _finite_float(row.get("prior_low_72"))
+        vol24 = _finite_float(row.get("prior_vol_sma24"))
+        conditions = {
+            "warmed_up": warmed_up,
+            "above_sma200": bool(close is not None and sma200 is not None and close > sma200),
+            "sma200_slope_rising": bool(slope is not None and slope > 0),
+            "breakout_7d_high": bool(close is not None and high168 is not None and close > high168),
+            "volume_above_24h_avg": bool(volume is not None and vol24 is not None and volume > 0 and volume > vol24),
+        }
+        regime = (
+            "bull_macro_aligned"
+            if (conditions["above_sma200"] and conditions["sma200_slope_rising"])
+            else "bear_or_neutral_cash"
+        )
+        met_count = sum(1 for passed in conditions.values() if passed)
+        return {
+            **base_info,
+            "regime": regime,
+            "entry_gates_passed": f"{met_count}/{len(conditions)}",
+            "conditions": conditions,
+            "proximity_pct": {
+                "move_to_sma200_pct": _pct_to_target(sma200, close),
+                "move_to_7d_breakout_pct": _pct_to_target(high168, close),
+                "cushion_above_3d_exit_pct": _pct_cushion_above(low72, close),
+            },
+        }
+
+    sma20 = _finite_float(row.get("sma20"))
+    sma50 = _finite_float(row.get("sma50"))
+    return {
+        **base_info,
+        "regime": "sma20_above_sma50" if (sma20 is not None and sma50 is not None and sma20 > sma50) else "sma20_at_or_below_sma50",
+        "proximity_pct": {
+            "sma20_to_sma50_pct": _pct_to_target(sma50, sma20),
+        },
+    }
+
+
+def probe_signal_proximity() -> dict:
+    import urllib.parse
+
+    auth = load_api_auth()
+    cfg_code, show_cfg = _container_api_call("GET", "/show_config", auth=auth)
+    wl_code, whitelist = _container_api_call("GET", "/whitelist", auth=auth)
+    if cfg_code != 200 or wl_code != 200 or not isinstance(show_cfg, dict):
+        raise ValueError("authenticated local API signal probe failed")
+    strategy = str(show_cfg.get("strategy") or "")
+    timeframe = str(show_cfg.get("timeframe") or "1h")
+    pairs = whitelist.get("whitelist", []) if isinstance(whitelist, dict) else []
+    summaries = {}
+    for pair in pairs:
+        query = urllib.parse.urlencode({"pair": pair, "timeframe": timeframe, "limit": 2})
+        c_code, hist = _container_api_call("GET", f"/pair_candles?{query}", auth=auth)
+        if c_code == 200 and isinstance(hist, dict) and hist.get("length", 0) > 0:
+            cols = hist.get("columns", [])
+            latest = dict(zip(cols, hist["data"][-1]))
+            summaries[pair] = summarize_pair_signal_row(pair, strategy, latest)
+        else:
+            summaries[pair] = {"pair": pair, "warmed_up": False, "error": "no_candles_loaded"}
+    return {
+        "strategy": strategy,
+        "timeframe": timeframe,
+        "bot_state": show_cfg.get("state"),
+        "pairs": summaries,
     }
 
 
@@ -677,13 +933,49 @@ def export_sanitized_bundle(destination: Path) -> dict:
     return {"exported_to": str(destination), "alerts": bundle["status"]["alerts"]}
 
 
+def pilot_digest(
+    max_heartbeat_age: float = DEFAULT_MAX_HEARTBEAT_AGE,
+    max_candle_age: float = DEFAULT_MAX_CANDLE_AGE,
+    min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
+    error_threshold: int = DEFAULT_ERROR_THRESHOLD,
+) -> dict:
+    current = status(
+        max_heartbeat_age=max_heartbeat_age,
+        max_candle_age=max_candle_age,
+        min_free_bytes=min_free_bytes,
+        error_threshold=error_threshold,
+    )
+    signals = None
+    if current.get("container_state") == "running" and API_AUTH.is_file():
+        try:
+            signals = probe_signal_proximity()
+        except Exception as exc:
+            signals = {"probe_error": sanitize_text(str(exc))}
+    managed = list_managed_backups(BACKUP_DIR)
+    return {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "container_state": current["container_state"],
+        "bot_state": (current.get("live_api") or {}).get("state"),
+        "strategy": (current.get("live_api") or {}).get("strategy"),
+        "paper_ledger": current["paper_ledger"],
+        "guard_health": current["guard_health"],
+        "alerts": current["alerts"],
+        "signal_proximity": signals,
+        "managed_backups": {
+            "directory": str(BACKUP_DIR),
+            "count": len(managed),
+            "latest_snapshot": managed[0][1].name if managed else None,
+        },
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "action",
         choices=(
-            "status", "verify-api", "pause", "resume",
-            "backup", "verify-backup", "restore-drill", "export",
+            "status", "digest", "signals", "verify-api", "pause", "resume",
+            "backup", "snapshot-rotate", "verify-backup", "restore-drill", "export",
         ),
     )
     parser.add_argument("target_path", nargs="?", type=Path)
@@ -692,11 +984,16 @@ def main() -> None:
     parser.add_argument("--max-candle-age", type=float, default=DEFAULT_MAX_CANDLE_AGE)
     parser.add_argument("--min-free-bytes", type=int, default=DEFAULT_MIN_FREE_BYTES)
     parser.add_argument("--error-threshold", type=int, default=DEFAULT_ERROR_THRESHOLD)
+    parser.add_argument("--keep-daily", type=int, default=DEFAULT_KEEP_DAILY_BACKUPS)
+    parser.add_argument("--keep-weekly", type=int, default=DEFAULT_KEEP_WEEKLY_BACKUPS)
     args = parser.parse_args()
 
-    needs_target = {"backup", "verify-backup", "restore-drill", "export"}
-    if (args.action in needs_target) != (args.target_path is not None):
-        parser.error(f"{args.action} requires a path argument" if args.action in needs_target else f"{args.action} takes no path argument")
+    requires_target = {"backup", "verify-backup", "restore-drill", "export"}
+    optional_target = {"snapshot-rotate"}
+    if args.action in requires_target and args.target_path is None:
+        parser.error(f"{args.action} requires a path argument")
+    if args.action not in (requires_target | optional_target) and args.target_path is not None:
+        parser.error(f"{args.action} takes no path argument")
     if (args.action == "restore-drill") != (args.isolated_dir is not None):
         parser.error("restore-drill requires both <backup_path> and <isolated_dir>")
 
@@ -709,6 +1006,15 @@ def main() -> None:
                 min_free_bytes=args.min_free_bytes,
                 error_threshold=args.error_threshold,
             ), indent=2))
+        elif args.action == "digest":
+            print(json.dumps(pilot_digest(
+                max_heartbeat_age=args.max_heartbeat_age,
+                max_candle_age=args.max_candle_age,
+                min_free_bytes=args.min_free_bytes,
+                error_threshold=args.error_threshold,
+            ), indent=2))
+        elif args.action == "signals":
+            print(json.dumps(probe_signal_proximity(), indent=2))
         elif args.action == "verify-api":
             print(json.dumps(probe_live_api(), indent=2))
         elif args.action == "pause":
@@ -718,6 +1024,12 @@ def main() -> None:
         elif args.action == "backup":
             backup(args.target_path)
             print(f"Paper SQLite backup created at {args.target_path}")
+        elif args.action == "snapshot-rotate":
+            print(json.dumps(snapshot_and_rotate_backups(
+                backup_dir=args.target_path or BACKUP_DIR,
+                keep_daily=args.keep_daily,
+                keep_weekly=args.keep_weekly,
+            ), indent=2))
         elif args.action == "verify-backup":
             with closing(connect_readonly(args.target_path)) as copy:
                 if copy.execute("PRAGMA quick_check").fetchone() != ("ok",):

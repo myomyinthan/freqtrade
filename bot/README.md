@@ -59,8 +59,11 @@ Use the selected exchange settings to run the baseline schema check. Pass `--loc
 python3 bot/scripts/preflight.py verify "$settings" --strategy PersonalSpotBaseline --local-api
 python3 bot/scripts/preflight.py run "$settings" --strategy PersonalSpotBaseline --local-api
 python3 bot/scripts/paper_status.py status
+python3 bot/scripts/paper_status.py digest
+python3 bot/scripts/paper_status.py signals
 python3 bot/scripts/paper_status.py pause
 python3 bot/scripts/paper_status.py resume
+python3 bot/scripts/paper_status.py snapshot-rotate
 python3 bot/scripts/paper_status.py backup bot/runtime/paper/morning.backup.sqlite
 python3 bot/scripts/paper_status.py verify-backup bot/runtime/paper/morning.backup.sqlite
 python3 bot/scripts/paper_status.py restore-drill bot/runtime/paper/morning.backup.sqlite /tmp/paper-restore-check

@@ -126,6 +126,85 @@ class PaperMonitoringAndOpsTest(TestCase):
         self.assertNotIn("dXNlcjpwYXNz", cleaned["log"])
         self.assertNotIn("abc123xyz", cleaned["log"])
 
+    def test_signal_proximity_summary_reports_macro_regime_and_breakout_distances(self):
+        bear_row = {
+            "date": "2026-11-16T18:00:00Z",
+            "close": 65000.0,
+            "volume": 8.0,
+            "warmed_up": True,
+            "sma120": 68250.0,
+            "sma360": 73125.0,
+            "sma360_slope24": -800.0,
+            "prior_high_336": 81250.0,
+            "prior_low_96": 62500.0,
+            "prior_vol_sma24": 12.0,
+            "enter_long": 0,
+            "exit_long": 0,
+        }
+        bear = paper_status.summarize_pair_signal_row(
+            "BTC/USDT", "PersonalSpotMacroBreakoutGuarded", bear_row,
+        )
+        self.assertEqual(bear["regime"], "bear_or_neutral_cash")
+        self.assertEqual(bear["entry_gates_passed"], "1/6")
+        self.assertEqual(bear["proximity_pct"]["move_to_sma120_pct"], 5.0)
+        self.assertEqual(bear["proximity_pct"]["move_to_14d_breakout_pct"], 25.0)
+        self.assertEqual(bear["proximity_pct"]["cushion_above_4d_exit_pct"], 4.0)
+
+        bull_row = {
+            **bear_row,
+            "close": 82000.0,
+            "volume": 20.0,
+            "sma120": 76000.0,
+            "sma360": 72000.0,
+            "sma360_slope24": 450.0,
+            "enter_long": 1,
+        }
+        bull = paper_status.summarize_pair_signal_row(
+            "BTC/USDT", "PersonalSpotMacroBreakoutGuarded", bull_row,
+        )
+        self.assertEqual(bull["regime"], "bull_macro_aligned")
+        self.assertEqual(bull["entry_gates_passed"], "6/6")
+        self.assertEqual(bull["enter_long"], 1)
+
+    def test_managed_backup_rotation_keeps_daily_and_weekly_and_ignores_manual_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "baseline.paper.sqlite"
+            backup_dir = root / "backups"
+            with closing(sqlite3.connect(source)) as db:
+                db.executescript(
+                    "CREATE TABLE trades(is_open INTEGER); "
+                    "CREATE TABLE orders(ft_is_open INTEGER, ft_order_side TEXT); "
+                    "INSERT INTO trades VALUES (0); INSERT INTO orders VALUES (0, 'buy');"
+                )
+            backup_dir.mkdir(mode=0o700)
+            manual_file = backup_dir / "morning-manual.backup.sqlite"
+            manual_file.write_text("keep-manual", encoding="utf-8")
+
+            base_day = datetime(2026, 11, 1, 8, 0, 0, tzinfo=timezone.utc)
+            # Create 10 daily snapshots across 10 consecutive days with keep_daily=3, keep_weekly=2.
+            for day_offset in range(10):
+                ts = base_day + timedelta(days=day_offset)
+                out = paper_status.snapshot_and_rotate_backups(
+                    backup_dir=backup_dir,
+                    keep_daily=3,
+                    keep_weekly=2,
+                    source_db=source,
+                    now=ts,
+                )
+            kept = out["retention"]["kept"]
+            # Must keep the 3 most recent days (Nov 10, Nov 9, Nov 8) plus newest from prior ISO week (Nov 8 is W45, Nov 1 is W44).
+            self.assertGreaterEqual(len(kept), 3)
+            self.assertLessEqual(len(kept), 4)
+            self.assertIn("paper-20261110T080000Z.sqlite", kept)
+            self.assertTrue(manual_file.is_file())
+            # Companion metadata files for pruned snapshots must also be removed.
+            meta_files = {p.name for p in backup_dir.glob("*.meta.json")}
+            self.assertEqual(
+                meta_files,
+                {name.replace(".sqlite", ".meta.json") for name in kept},
+            )
+
 
 class PaperGuardTest(TestCase):
     def setUp(self):
