@@ -15,6 +15,7 @@ STRATEGY = "PersonalSpotBaseline"
 RESEARCH_STRATEGIES = {
     "PersonalSpotBaseline": 100,
     "PersonalSpotBreakout": 240,
+    "PersonalSpotMacroBreakout": 400,
 }
 
 

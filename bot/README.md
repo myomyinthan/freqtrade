@@ -2,7 +2,7 @@
 
 This directory contains the Milestone 0 scaffold for the personal Freqtrade fork. The Git base is release 2026.10 and Compose uses the corresponding ARM64 image by digest. [Version lock](VERSION.lock.json)
 
-The paper launcher defaults to the inert `PaperScaffold` fixture. Select `--strategy PersonalSpotBaseline` (`H001`) or `--strategy PersonalSpotBreakout` (`H002`), or their guarded counterparts (`PersonalSpotGuarded` / `PersonalSpotBreakoutGuarded`). They share the dedicated `baseline.paper.sqlite` paper database.
+The paper launcher defaults to the inert `PaperScaffold` fixture. Select `--strategy PersonalSpotBaseline` (`H001`), `--strategy PersonalSpotBreakout` (`H002`), `--strategy PersonalSpotMacroBreakout` (`H003`), or their guarded counterparts (`PersonalSpotGuarded`, `PersonalSpotBreakoutGuarded`, `PersonalSpotMacroBreakoutGuarded`). They share the dedicated `baseline.paper.sqlite` paper database.
 
 ## Check the scaffold
 
@@ -80,4 +80,4 @@ python3 bot/scripts/guard_runner.py watch "$settings"
 python3 bot/scripts/preflight.py run "$settings" --strategy PersonalSpotGuarded --local-api
 ```
 
-Reports and runbooks: [H001 research report](docs/research/H001-binance-usdt-spot-report.md), [H002 pre-registration](docs/research/H002-preregistration.md), [H002 research report](docs/research/H002-binance-usdt-spot-report.md), [M3 smoke & drills](docs/operations/M3-paper-smoke-and-drills.md), [M4 guard & deployment guide](docs/operations/M4-guard-and-deployment-guide.md), and [Live-boundary decision dossier](docs/operations/M4-decision-dossier.md).
+Reports and runbooks: [H001 research report](docs/research/H001-binance-usdt-spot-report.md), [H002 pre-registration](docs/research/H002-preregistration.md), [H002 research report](docs/research/H002-binance-usdt-spot-report.md), [H003 pre-registration](docs/research/H003-preregistration.md), [H003 research report](docs/research/H003-binance-usdt-spot-report.md), [M3 smoke & drills](docs/operations/M3-paper-smoke-and-drills.md), [M4 guard & deployment guide](docs/operations/M4-guard-and-deployment-guide.md), and [Live-boundary decision dossier](docs/operations/M4-decision-dossier.md).

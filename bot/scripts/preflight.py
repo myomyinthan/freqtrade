@@ -30,13 +30,19 @@ CONTAINER_USERDIR = "/freqtrade/bot/runtime/paper"
 DB_URL = f"sqlite:///{CONTAINER_USERDIR}/{DB_NAME}"
 STRATEGY = "PaperScaffold"
 GUARDED_STRATEGY = "PersonalSpotGuarded"
-GUARDED_STRATEGIES = (GUARDED_STRATEGY, "PersonalSpotBreakoutGuarded")
+GUARDED_STRATEGIES = (
+    GUARDED_STRATEGY,
+    "PersonalSpotBreakoutGuarded",
+    "PersonalSpotMacroBreakoutGuarded",
+)
 STRATEGIES = (
     STRATEGY,
     "PersonalSpotBaseline",
     GUARDED_STRATEGY,
     "PersonalSpotBreakout",
     "PersonalSpotBreakoutGuarded",
+    "PersonalSpotMacroBreakout",
+    "PersonalSpotMacroBreakoutGuarded",
 )
 STATES = ("running", "paused")
 SETTINGS = {"exchange", "stake_currency", "stake_amount", "dry_run_wallet"}
