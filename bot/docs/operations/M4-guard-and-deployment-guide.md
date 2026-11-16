@@ -8,7 +8,7 @@ Scope: **Credential-free dry-run deployment only** (no paid cloud host provision
 | Component | Exact reference / path |
 | --- | --- |
 | Fork & upstream commit | Release `2026.10`, commit `4cf0351e08d26e96a6429ef48103b726bb230cf8` (`bot/VERSION.lock.json`) |
-| Immutable runtime image | `docker.io/freqtradeorg/freqtrade@sha256:1bb9a6b11a4dae39444331aa324b139dcd635f6a1c586ce9ecccac17994edc0c` (`linux/arm64`; update `VERSION.lock.json` and `compose.yaml` together after verifying the `linux/amd64` digest if moving to an x86_64 Linux host) |
+| Immutable runtime image | Active Compose pin `docker.io/freqtradeorg/freqtrade@sha256:1bb9a6b11a4dae39444331aa324b139dcd635f6a1c586ce9ecccac17994edc0c` (`linux/arm64`). Recorded `linux/amd64` digest `sha256:956c03780934eeb93734a1f352e7e150b73becdafa3767a947a25ad2422fba2e` (`48/48` offline tests, Compose not switched). `host_ready.py` refuses to treat this Mac as the always-on host |
 | Compose manifest | `bot/compose.yaml` — read-only bind mounts for `configs/base.example.json`, `risk/`, `scripts/`, and `strategies/`; writable `0700` `runtime/paper/` mount; **zero host ports exposed** |
 | Paper launcher | `bot/scripts/preflight.py` — enforces `dry_run=true`, `trading_mode=spot`, `force_entry_enable=false`, single-writer `runner.lock`, `0600` `api.auth.json`, and armed guard verification |
 | Separate guard service | `bot/scripts/guard_runner.py` + `bot/risk/guard.py` — atomic `0600` `guard.state.json` persistence, 10s polling target, 30s entry-permission lease, container-loopback `/api/v1/pause` + pending-`buy` cancellation |

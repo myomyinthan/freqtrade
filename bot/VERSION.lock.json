@@ -12,5 +12,18 @@
     "release": "https://github.com/freqtrade/freqtrade/releases/tag/2026.10",
     "commit": "https://github.com/freqtrade/freqtrade/commit/4cf0351e08d26e96a6429ef48103b726bb230cf8",
     "registry_tag": "docker.io/freqtradeorg/freqtrade:2026.10"
+  },
+  "alternate_platforms": {
+    "linux/amd64": {
+      "image": "docker.io/freqtradeorg/freqtrade@sha256:956c03780934eeb93734a1f352e7e150b73becdafa3767a947a25ad2422fba2e",
+      "platform": "linux/amd64",
+      "freqtrade_version": "2026.10",
+      "image_python_version": "3.14.10",
+      "image_ccxt_version": "4.5.90",
+      "container_tests": "48/48 passed with --network none",
+      "checked_on": "2026-11-17",
+      "compose_active": false,
+      "verification": "The 2026.10 registry index lists this digest next to the verified arm64 digest. An offline linux/amd64 container reported freqtrade 2026.10, Python 3.14.10 and CCXT 4.5.90. This Mac's Compose file stays on linux/arm64."
+    }
   }
 }

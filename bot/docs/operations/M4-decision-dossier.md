@@ -28,12 +28,12 @@ Because **engineering readiness does not substitute for positive economic expect
 
 | Area | Artifact | Result |
 | --- | --- | --- |
-| Engine & version lock | `bot/VERSION.lock.json`, `bot/compose.yaml` | Pinned `2026.10` (`linux/arm64`), read-only overlay mounts, zero host ports |
+| Engine & version lock | `bot/VERSION.lock.json`, `bot/compose.yaml` | Active pin `2026.10` `linux/arm64`. `linux/amd64` digest recorded and offline-tested; no host provisioned |
 | Venue capability review | `bot/docs/venues/binance-usdt-spot.md` | `BTC/USDT`, `ETH/USDT`, `SOL/USDT` `TRADING`, `5 USDT` min notional, `0.10%` provisional regular-user fee |
 | Historical evaluation | `bot/docs/research/H001-…`, `H002-…`, `H003-binance-usdt-spot-report.md` | `H001` FAIL; `H002` +2.40% dev; **`H003` PASSED untouched holdout (`+1.76%` vs `-12.41%` mkt, PF `3.90`, `1.28%` wallet DD; holdout now consumed)** |
 | Automated test suite | `bot/tests/test_*.py` (`43` tests) | `43 / 43` passed inside pinned container with `--network none` |
 | B17 continuity audit | `bot/scripts/pilot_audit.py` | Live pilot reports `observing_in_progress` (cash regime; `0` natural trades yet; no uptime gaps while running) |
-| B20 host bundle | `bot/deploy/systemd/`, `bot/deploy/launchd/` | Linux units remain uninstalled (no always-on host). macOS `launchd` install rolls back while the checkout is under `Documents`; `host_supervise.py session` is the awake-session supervisor |
+| B20 host bundle | `bot/deploy/systemd/`, `bot/scripts/host_ready.py` | No always-on host exists. Readiness verdict on this Mac is `not_an_always_on_host`; systemd units remain uninstalled |
 
 ---
 

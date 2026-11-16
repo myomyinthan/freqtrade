@@ -6,9 +6,12 @@ This directory packages hardened rootless/user `systemd` units for running the *
 
 ## 1. Architecture Note (`linux/arm64` vs. `linux/amd64`)
 
-`bot/VERSION.lock.json` and `bot/compose.yaml` pin the verified `linux/arm64` digest of `freqtradeorg/freqtrade:2026.10` (`sha256:1bb9a6b11a4dae39444331aa324b139dcd635f6a1c586ce9ecccac17994edc0c`).
-- On an **ARM64** Linux host, use the lockfile as-is.
-- On an **x86_64 (`linux/amd64`)** Linux host, inspect the official multi-arch manifest for `docker.io/freqtradeorg/freqtrade:2026.10`, record the immutable `linux/amd64` SHA-256 digest in `bot/VERSION.lock.json` and `bot/compose.yaml`, and re-run the offline container test suite before starting the service.
+`bot/VERSION.lock.json` and `bot/compose.yaml` pin the verified `linux/arm64` digest of `freqtradeorg/freqtrade:2026.10` (`sha256:1bb9a6b11a4dae39444331aa324b139dcd635f6a1c586ce9ecccac17994edc0c`). The same registry index records `linux/amd64` as `sha256:956c03780934eeb93734a1f352e7e150b73becdafa3767a947a25ad2422fba2e`. An offline run of that digest reported `freqtrade 2026.10`, Python `3.14.10`, CCXT `4.5.90`, and passed `48/48` container tests. Compose on this Mac stays `linux/arm64`.
+
+Before copying any unit, run `python3 bot/scripts/host_ready.py`. It does not install services or create a host.
+- On this Mac the verdict is `not_an_always_on_host`. The Colima VM sleeps with the laptop.
+- On an **ARM64** Linux host, the verdict is `ready_for_dry_run_systemd_install`.
+- On an **x86_64** Linux host, the verdict is `repoint_compose_to_recorded_amd64_digest_before_install`. Change `VERSION.lock.json` and `compose.yaml` together, then rerun the container tests on that host.
 
 ## 2. Install & Start (User `systemd` Instance)
 
