@@ -1,0 +1,20 @@
+{
+  "dry_run": true,
+  "trading_mode": "spot",
+  "force_entry_enable": false,
+  "position_adjustment_enable": false,
+  "db_url": "sqlite:////freqtrade/bot/runtime/paper/trades.paper.sqlite",
+  "max_open_trades": 2,
+  "stake_currency": null,
+  "stake_amount": null,
+  "dry_run_wallet": null,
+  "tradable_balance_ratio": 0.99,
+  "initial_state": "running",
+  "cancel_open_orders_on_exit": true,
+  "timeframe": "1h",
+  "exchange": {"name": null, "pair_whitelist": [], "pair_blacklist": []},
+  "pairlists": [{"method": "StaticPairList"}],
+  "entry_pricing": {"price_side": "same", "use_order_book": true, "order_book_top": 1},
+  "exit_pricing": {"price_side": "same", "use_order_book": true, "order_book_top": 1},
+  "unfilledtimeout": {"entry": 10, "exit": 10, "exit_timeout_count": 0, "unit": "minutes"}
+}

@@ -1,0 +1,16 @@
+{
+  "release": "2026.10",
+  "upstream_commit": "4cf0351e08d26e96a6429ef48103b726bb230cf8",
+  "image": "docker.io/freqtradeorg/freqtrade@sha256:1bb9a6b11a4dae39444331aa324b139dcd635f6a1c586ce9ecccac17994edc0c",
+  "platform": "linux/arm64",
+  "freqtrade_version": "2026.10",
+  "image_python_version": "3.14.10",
+  "image_ccxt_version": "4.5.90",
+  "verification": "Registry platform manifest, container version output and matching SHA-256 checksums of configuration validation, constants and trade engine source at the tagged commit.",
+  "checked_on": "2026-11-16",
+  "sources": {
+    "release": "https://github.com/freqtrade/freqtrade/releases/tag/2026.10",
+    "commit": "https://github.com/freqtrade/freqtrade/commit/4cf0351e08d26e96a6429ef48103b726bb230cf8",
+    "registry_tag": "docker.io/freqtradeorg/freqtrade:2026.10"
+  }
+}

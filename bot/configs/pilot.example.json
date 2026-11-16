@@ -1,0 +1,6 @@
+{
+  "exchange": {"name": null, "pair_whitelist": []},
+  "stake_currency": null,
+  "stake_amount": null,
+  "dry_run_wallet": null
+}
