@@ -43,7 +43,7 @@ Because **engineering readiness does not substitute for positive economic expect
 2. **Polling guard is not a hard loss cap:** `guard_runner.py` halts *new* entries within `~10s` (or `<=30s` lease expiry if the guard daemon dies) and cancels open `buy` orders, while open spot holdings remain exposed to adverse price gaps, exchange outages, or off-exchange stoploss delays.
 3. **Simulated fills vs. live book microstructure:** Candle backtests and dry-run order-book top-1 fills do not prove queue priority, partial-fill dust handling, API rate-limit throttling under volatility, or exchange maintenance behavior.
 4. **Unverified operator jurisdiction & fee tier:** Public `api.binance.com` market data succeeded without credentials; personal Binance account eligibility, KYC/jurisdiction compliance, IP-restricted spot-only API keys (withdrawals disabled), and actual maker/taker fee tier remain unverified.
-5. **Local laptop sleep:** Continuous 24/7 operation cannot be claimed on a sleeping laptop. `launchd` cannot read this checkout under `Documents` without Full Disk Access, so awake-session supervision uses `host_supervise.py session` instead. An always-on host still requires an explicit hosting and budget decision before the `B17` window can be treated as continuous.
+5. **Local laptop sleep:** Continuous 24/7 operation cannot be claimed on a sleeping laptop. `launchd` cannot read this checkout under `Documents` without Full Disk Access, so awake-session supervision uses `host_supervise.py session`, including `caffeinate -s` while on AC power with the lid open. A closed lid still sleeps. An always-on host still requires an explicit hosting and budget decision before the `B17` window can be treated as continuous.
 
 ---
 

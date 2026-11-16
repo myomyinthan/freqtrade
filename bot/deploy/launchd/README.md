@@ -14,6 +14,6 @@ Sleep, a closed lid, or shutdown still breaks the `B17` continuous-uptime claim.
 python3 bot/scripts/host_supervise.py session
 ```
 
-`session` adopts the running guard and paper container and repeats the UTC daily snapshot/audit every 15 minutes. Those processes survive closing the terminal while the Mac stays awake. They do not survive reboot or sleep, so they do not make the `B17` window continuous.
+`session` adopts the running guard and paper container, repeats the UTC daily snapshot/audit every 15 minutes, and runs `caffeinate -s` so idle system sleep is held while the Mac is on AC power and the lid stays open. Those processes survive closing the terminal. A closed lid, battery-only idle, or reboot still sleeps the machine, so this does not make the `B17` window continuous. The daily audit records whether that AC assertion was present.
 
 Logs and lock files stay in the ignored runtime directory `bot/runtime/paper/host/`.

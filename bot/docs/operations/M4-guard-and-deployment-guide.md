@@ -52,7 +52,7 @@ python3 bot/scripts/preflight.py run "$settings" \
   --strategy PersonalSpotMacroBreakoutGuarded --local-api
 ```
 
-For always-on Linux hosts, install the user units in `bot/deploy/systemd/` (see that README). On this Mac, `python3 bot/scripts/host_supervise.py session` adopts the running guard and paper container from an authorized Terminal or Cursor session and records a once-per-UTC-day snapshot plus `pilot_audit.py` after `00:15 UTC` (`bot/deploy/launchd/`). `install` is the `launchd` path, and it rolls back if macOS privacy blocks background reads of `Documents`. Sleep or a closed lid still invalidates the `B17` continuous-uptime claim.
+For always-on Linux hosts, install the user units in `bot/deploy/systemd/` (see that README). On this Mac, `python3 bot/scripts/host_supervise.py session` adopts the running guard and paper container from an authorized Terminal or Cursor session and records a once-per-UTC-day snapshot plus `pilot_audit.py` after `00:15 UTC` (`bot/deploy/launchd/`). `install` is the `launchd` path, and it rolls back if macOS privacy blocks background reads of `Documents`. `caffeinate -s` then holds idle system sleep on AC power with the lid open. A closed lid or battery-only idle still invalidates the `B17` continuous-uptime claim.
 
 ## 4. B17 Continuity & Fill-Drift Audit
 

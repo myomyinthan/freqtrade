@@ -161,6 +161,7 @@ def run_daily_maintenance(now: datetime | None = None) -> dict:
         "recorded_at_utc": current.astimezone(timezone.utc).isoformat(),
         "snapshot": snapshot,
         "pilot_audit": report,
+        "power": read_power_assertions(),
     })
     fd = os.open(DAILY_STAMP, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -317,15 +318,59 @@ def spawn_detached(argv: list[str], log_path: Path, err_path: Path, pid_path: Pa
     raise OSError("execv returned")
 
 
-def start_session() -> dict:
-    HOST_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    python = sys.executable
-    script = str(Path(__file__).resolve())
+def awake_argv(caffeinate: str) -> list[str]:
+    # Prevent idle system sleep only while AC power is connected. A closed lid still sleeps.
+    return [caffeinate, "-s"]
+
+
+def session_specs(python: str, script: str, caffeinate: str | None) -> dict[str, list[str]]:
     specs = {
         "guard": [python, script, "supervise", "guard"],
         "paper": [python, script, "supervise", "paper"],
         "daily": [python, script, "daily-loop"],
     }
+    if caffeinate:
+        specs["awake"] = awake_argv(caffeinate)
+    return specs
+
+
+def summarize_power_assertions(text: str) -> dict:
+    system_sleep = False
+    idle_sleep = False
+    caffeinate_holds_system_sleep = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("PreventSystemSleep"):
+            system_sleep = stripped.split()[-1] not in {"0", ""}
+        elif stripped.startswith("PreventUserIdleSystemSleep"):
+            idle_sleep = stripped.split()[-1] not in {"0", ""}
+        if "caffeinate" in stripped.lower() and "PreventSystemSleep" in stripped:
+            caffeinate_holds_system_sleep = True
+    return {
+        "prevent_system_sleep": system_sleep,
+        "prevent_user_idle_system_sleep": idle_sleep,
+        "ac_idle_sleep_held_by_caffeinate": caffeinate_holds_system_sleep,
+        "lid_close_still_sleeps": True,
+    }
+
+
+def read_power_assertions() -> dict:
+    pmset = shutil.which("pmset")
+    if not pmset:
+        return {"available": False, "lid_close_still_sleeps": True}
+    proc = subprocess.run([pmset, "-g", "assertions"], capture_output=True, text=True)
+    if proc.returncode != 0:
+        return {"available": False, "lid_close_still_sleeps": True, "detail": (proc.stderr or "").strip()}
+    summary = summarize_power_assertions(proc.stdout)
+    summary["available"] = True
+    return summary
+
+
+def start_session() -> dict:
+    HOST_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    python = sys.executable
+    script = str(Path(__file__).resolve())
+    specs = session_specs(python, script, shutil.which("caffeinate"))
     pids = {}
     for role, argv in specs.items():
         pids[role] = spawn_detached(
@@ -336,10 +381,11 @@ def start_session() -> dict:
         )
     return {
         "pids": pids,
+        "power": read_power_assertions(),
         "continuity_note": (
-            "Session supervisors were started from an authorized process. They survive "
-            "terminal close while the Mac stays awake, and they stop on reboot or sleep. "
-            "That does not satisfy the B17 continuous-uptime claim."
+            "Session supervisors were started from an authorized process. On AC power, "
+            "caffeinate -s holds idle system sleep while the lid stays open. A closed lid, "
+            "battery-only idle, or reboot still breaks the B17 continuous-uptime claim."
         ),
     }
 

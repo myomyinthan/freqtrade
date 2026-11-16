@@ -69,13 +69,34 @@ class HostSuperviseDecisionTest(TestCase):
         )
         self.assertEqual(daily["StartInterval"], 900)
         self.assertNotIn("KeepAlive", daily)
-        self.assertTrue(host_supervise.launchd_blocked(
-            "can't open file '/Users/me/Documents/repo/host_supervise.py': [Errno 1] Operation not permitted"
-        ))
-        self.assertFalse(host_supervise.launchd_blocked(""))
         self.assertTrue(host_supervise.agent_plist(
             "guard",
             python="/usr/bin/python3",
             path_env="/usr/bin:/bin",
             log_dir=log_dir,
         )["KeepAlive"])
+
+    def test_ac_idle_sleep_hold_is_explicit_and_does_not_claim_lid_close(self):
+        argv = host_supervise.awake_argv("/usr/bin/caffeinate")
+        self.assertEqual(argv, ["/usr/bin/caffeinate", "-s"])
+        specs = host_supervise.session_specs("/usr/bin/python3", "/repo/host_supervise.py", "/usr/bin/caffeinate")
+        self.assertEqual(specs["awake"], ["/usr/bin/caffeinate", "-s"])
+        self.assertNotIn("awake", host_supervise.session_specs("/usr/bin/python3", "/repo/host_supervise.py", None))
+        sample = """
+Assertion status system-wide:
+   PreventUserIdleSystemSleep     0
+   PreventSystemSleep             1
+Listed by owning process:
+   pid 42(caffeinate): [0x1] 00:01:00 PreventSystemSleep named: "caffeinate command-line tool"
+"""
+        summary = host_supervise.summarize_power_assertions(sample)
+        self.assertTrue(summary["prevent_system_sleep"])
+        self.assertFalse(summary["prevent_user_idle_system_sleep"])
+        self.assertTrue(summary["ac_idle_sleep_held_by_caffeinate"])
+        self.assertTrue(summary["lid_close_still_sleeps"])
+
+    def test_documents_privacy_block_is_detected(self):
+        self.assertTrue(host_supervise.launchd_blocked(
+            "can't open file '/Users/me/Documents/repo/host_supervise.py': [Errno 1] Operation not permitted"
+        ))
+        self.assertFalse(host_supervise.launchd_blocked(""))
