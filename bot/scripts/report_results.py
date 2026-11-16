@@ -11,13 +11,19 @@ from zipfile import ZipFile
 STRATEGY = "PersonalSpotBaseline"
 
 
-def load_stats(path):
+def load_stats(path, strategy=None):
     if path.suffix == ".zip":
         with ZipFile(path) as archive:
             member = f"{path.stem}.json"
             with archive.open(member) as stream:
-                return json.load(stream)["strategy"][STRATEGY]
-    return json.loads(path.read_text(encoding="utf-8"))["strategy"][STRATEGY]
+                strategies = json.load(stream)["strategy"]
+    else:
+        strategies = json.loads(path.read_text(encoding="utf-8"))["strategy"]
+    if strategy is not None:
+        return strategies[strategy]
+    if len(strategies) == 1:
+        return next(iter(strategies.values()))
+    return strategies[STRATEGY]
 
 
 def buy_hold(dataset, settings, start, end, fee):

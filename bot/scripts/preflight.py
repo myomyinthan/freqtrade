@@ -30,7 +30,14 @@ CONTAINER_USERDIR = "/freqtrade/bot/runtime/paper"
 DB_URL = f"sqlite:///{CONTAINER_USERDIR}/{DB_NAME}"
 STRATEGY = "PaperScaffold"
 GUARDED_STRATEGY = "PersonalSpotGuarded"
-STRATEGIES = (STRATEGY, "PersonalSpotBaseline", GUARDED_STRATEGY)
+GUARDED_STRATEGIES = (GUARDED_STRATEGY, "PersonalSpotBreakoutGuarded")
+STRATEGIES = (
+    STRATEGY,
+    "PersonalSpotBaseline",
+    GUARDED_STRATEGY,
+    "PersonalSpotBreakout",
+    "PersonalSpotBreakoutGuarded",
+)
 STATES = ("running", "paused")
 SETTINGS = {"exchange", "stake_currency", "stake_amount", "dry_run_wallet"}
 
@@ -263,7 +270,7 @@ def record_launch(config, command, strategy=STRATEGY, local_api=False):
         "local_api_enabled": bool(local_api),
         "guard_enforcement": (
             "persisted_entry_halt_active_not_hard_loss_guarantee"
-            if strategy == GUARDED_STRATEGY
+            if strategy in GUARDED_STRATEGIES
             else "not_integrated_no_daily_loss_enforcement_claimed"
         ),
     }
@@ -298,9 +305,9 @@ def engine(mode, strategy_name, initial_state="running", local_api=False):
     # Validate the same settings inside the container before passing a single config to the engine.
     config = resolve_config(read_settings(sys.stdin), strategy_name, initial_state)
     check_paper_paths(strategy_name)
-    if strategy_name == GUARDED_STRATEGY:
+    if strategy_name in GUARDED_STRATEGIES:
         if mode == "run" and not local_api:
-            raise ValueError("PersonalSpotGuarded requires --local-api for entry-pause enforcement")
+            raise ValueError(f"{strategy_name} requires --local-api for entry-pause enforcement")
         check_guard_readiness(config, mode)
     if local_api:
         config["api_server"] = api_server_config()
@@ -361,9 +368,9 @@ def main():
             settings = read_settings(stream)
         config = resolve_config(settings, args.strategy, args.state)
         check_paper_paths(args.strategy)
-        if args.strategy == GUARDED_STRATEGY:
+        if args.strategy in GUARDED_STRATEGIES:
             if args.mode == "run" and not args.local_api:
-                raise ValueError("PersonalSpotGuarded requires --local-api for entry-pause enforcement")
+                raise ValueError(f"{args.strategy} requires --local-api for entry-pause enforcement")
             if args.mode in ("check", "run"):
                 check_guard_readiness(config, args.mode)
         if args.mode == "check":

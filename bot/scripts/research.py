@@ -12,7 +12,16 @@ from preflight import BOT_DIR, read_settings, reject_environment_overrides, reso
 
 CONTAINER = "/project"
 STRATEGY = "PersonalSpotBaseline"
-SOURCE = BOT_DIR / "strategies" / f"{STRATEGY}.py"
+RESEARCH_STRATEGIES = {
+    "PersonalSpotBaseline": 100,
+    "PersonalSpotBreakout": 240,
+}
+
+
+def strategy_source(name: str) -> Path:
+    if name not in RESEARCH_STRATEGIES:
+        raise ValueError(f"unsupported research strategy: {name}")
+    return BOT_DIR / "strategies" / f"{name}.py"
 
 
 def read_json(path):
@@ -106,7 +115,10 @@ def evaluate(args, lock, dataset, config):
     manifest, dataset_hash = market_scope(config, dataset, lock)
     protocol = read_json(args.protocol)
     settings_hash = fingerprint(config)
-    strategy_hash = digest(SOURCE)
+    source = strategy_source(args.strategy)
+    strategy_hash = digest(source)
+    if protocol.get("strategy", STRATEGY) != args.strategy:
+        raise ValueError("protocol strategy does not match --strategy")
     if (
         protocol.get("dataset_manifest_sha256") != dataset_hash
         or protocol.get("effective_config_sha256") != settings_hash
@@ -126,7 +138,7 @@ def evaluate(args, lock, dataset, config):
     if args.window not in {"train", "validation", "test"} and end > test_start:
         raise ValueError("walk-forward and diagnostic windows must precede the untouched test")
     first, last = date_range(manifest["range_utc"])
-    warmup = 400 if args.action == "recursive-analysis" else 100
+    warmup = 400 if args.action == "recursive-analysis" else RESEARCH_STRATEGIES[args.strategy]
     if start < first + timedelta(hours=warmup) or end > last:
         raise ValueError("the frozen dataset must cover the whole window and startup candles")
     if args.window == "test" and (args.action != "backtesting" or args.fee_multiplier != 1 or args.detail):
@@ -149,7 +161,7 @@ def evaluate(args, lock, dataset, config):
         # One attempt per dataset and test period, even if protocol settings are later edited.
         name = f"untouched-{dataset_hash[:12]}-{chosen}"
     else:
-        name = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f") + f"-{args.window}"
+        name = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f") + f"-{args.strategy}-{args.window}"
     output = output_root / name
     output.mkdir()
     # Freqtrade includes its end timestamp. Leave the next UTC window's opening candle out.
@@ -157,7 +169,7 @@ def evaluate(args, lock, dataset, config):
     engine_range = f"{start:%Y%m%d}-{end_inclusive:%Y%m%dT%H%M}"
     command = docker(lock, dataset, output=output) + [
         args.action, "-c", "-", "--userdir", "/results", "--strategy-path",
-        f"{CONTAINER}/strategies", "--strategy", STRATEGY, "--datadir", "/dataset",
+        f"{CONTAINER}/strategies", "--strategy", args.strategy, "--datadir", "/dataset",
         "--timerange", engine_range,
     ]
     if args.action == "backtesting":
@@ -177,7 +189,8 @@ def evaluate(args, lock, dataset, config):
     revision = subprocess.check_output(["git", "-C", str(BOT_DIR), "rev-parse", "HEAD"], text=True).strip()
     dirty = bool(subprocess.check_output(["git", "-C", str(BOT_DIR), "status", "--porcelain"]))
     run = {
-        "status": "started", "command": command, "window": args.window, "engine": lock,
+        "status": "started", "command": command, "strategy": args.strategy,
+        "window": args.window, "engine": lock,
         "dataset_manifest_sha256": dataset_hash, "strategy_sha256": strategy_hash,
         "registered_config_sha256": settings_hash, "effective_config_sha256": fingerprint(config),
         "protocol_sha256": protocol_hash,
@@ -212,6 +225,7 @@ def main():
                                          "lookahead-analysis", "recursive-analysis"))
     parser.add_argument("settings", type=Path)
     parser.add_argument("dataset", type=Path)
+    parser.add_argument("--strategy", choices=tuple(RESEARCH_STRATEGIES), default=STRATEGY)
     parser.add_argument("--range", dest="dates")
     parser.add_argument("--timeframes", nargs="+", choices=("1h", "5m"), default=["1h", "5m"])
     parser.add_argument("--protocol", type=Path)
@@ -248,8 +262,10 @@ def main():
         if args.action == "pins":
             _, manifest_hash = market_scope(config, dataset, lock)
             print(json.dumps({
-                "dataset_manifest_sha256": manifest_hash, "effective_config_sha256": fingerprint(config),
-                "strategy_sha256": digest(SOURCE),
+                "strategy": args.strategy,
+                "dataset_manifest_sha256": manifest_hash,
+                "effective_config_sha256": fingerprint(config),
+                "strategy_sha256": digest(strategy_source(args.strategy)),
             }, indent=2))
             return 0
         if args.protocol is None or not args.window:

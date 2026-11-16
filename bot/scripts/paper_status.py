@@ -621,7 +621,7 @@ def status(
     active_strategy = live_api.get("strategy") if isinstance(live_api, dict) else None
     guard_label = (
         "persisted_entry_halt_active_not_hard_loss_guarantee"
-        if (active_strategy == "PersonalSpotGuarded" or guard_health.get("policy_present"))
+        if (active_strategy in ("PersonalSpotGuarded", "PersonalSpotBreakoutGuarded") or guard_health.get("policy_present"))
         else "not_integrated_no_daily_loss_enforcement_claimed"
     )
     snapshot = {

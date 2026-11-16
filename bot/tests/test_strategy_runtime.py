@@ -58,3 +58,64 @@ class BaselineTest(TestCase):
         self.assertEqual([event.exit_type for event in exits], [ExitType.EXIT_SIGNAL, ExitType.STOP_LOSS])
         exits = self.strategy.should_exit(trade, 110, now, enter=False, exit_=False)
         self.assertEqual(exits, [])
+
+
+@skipIf(pd is None, "run in the pinned Freqtrade container")
+class BreakoutH002Test(TestCase):
+    def setUp(self):
+        self.strategy = StrategyResolver.load_strategy({
+            "strategy": "PersonalSpotBreakout",
+            "strategy_path": str(Path(__file__).resolve().parents[1] / "strategies"),
+            "user_data_dir": Path("/tmp"),
+        })
+
+    def signals(self, closes, highs=None, lows=None, volumes=None):
+        n = len(closes)
+        data = pd.DataFrame({
+            "open": closes,
+            "high": highs if highs is not None else [c + 0.5 for c in closes],
+            "low": lows if lows is not None else [c - 0.5 for c in closes],
+            "close": closes,
+            "volume": volumes if volumes is not None else [10.0] * n,
+        })
+        data = self.strategy.populate_indicators(data, {})
+        data = self.strategy.populate_entry_trend(data, {})
+        return self.strategy.populate_exit_trend(data, {})
+
+    def test_regime_filtered_breakout_and_channel_exit_without_conflicts(self):
+        # Gentle uptrend for 240 bars so sma200 is rising, then high-volume 7d breakout, then 3d breakdown.
+        closes = [100.0 + 0.05 * i for i in range(245)] + [130.0] + [128.0] * 10 + [95.0]
+        vols = [10.0] * 245 + [25.0] + [10.0] * 10 + [15.0]
+        frame = self.signals(closes, volumes=vols)
+        self.assertEqual(int(frame.iloc[:240]["enter_long"].sum()), 0)
+        self.assertEqual(int(frame.loc[245, "enter_long"]), 1)
+        self.assertEqual(frame.loc[245, "enter_tag"], "donchian_breakout_up")
+        self.assertEqual(int(frame.iloc[-1]["exit_long"]), 1)
+        self.assertEqual(frame.iloc[-1]["exit_tag"], "donchian_channel_exit")
+        self.assertFalse((frame["enter_long"] & frame["exit_long"]).any())
+        self.assertNotIn("enter_short", frame)
+
+    def test_blocks_bear_regime_low_volume_and_corrupted_bars(self):
+        # Falling regime (sma200 falling): breakout bar must NOT enter.
+        falling = [200.0 - 0.2 * i for i in range(245)] + [185.0]
+        vols = [10.0] * 245 + [30.0]
+        self.assertEqual(int(self.signals(falling, volumes=vols)["enter_long"].sum()), 0)
+
+        # Rising regime with below-average volume on breakout bar: must NOT enter.
+        rising = [100.0 + 0.05 * i for i in range(245)] + [130.0]
+        low_vols = [10.0] * 245 + [5.0]
+        self.assertEqual(int(self.signals(rising, volumes=low_vols)["enter_long"].sum()), 0)
+
+        # NaN inside the 240-bar warmup resets warmed_up and blocks entry.
+        bad = rising.copy()
+        bad[120] = float("nan")
+        self.assertEqual(int(self.signals(bad, volumes=vols)["enter_long"].sum()), 0)
+
+    def test_prefixes_produce_identical_past_signals(self):
+        closes = [100.0 + 0.05 * i for i in range(245)] + [130.0] + [129.0] * 15 + [90.0] * 5
+        vols = [10.0] * 245 + [25.0] + [12.0] * 15 + [18.0] * 5
+        full = self.signals(closes, volumes=vols)
+        for end in (240, 246, 255, 263, 266):
+            pd.testing.assert_frame_equal(
+                self.signals(closes[:end], volumes=vols[:end]), full.iloc[:end],
+            )
