@@ -77,6 +77,18 @@ def parse_utc_iso(value: str) -> datetime:
     cleaned = value.strip()
     if cleaned.endswith("Z"):
         cleaned = cleaned[:-1] + "+00:00"
+    # Docker/Go timestamps often carry nanoseconds; datetime accepts microseconds only.
+    match = re.match(
+        r"^(?P<head>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})"
+        r"(?:\.(?P<frac>\d+))?(?P<tz>[+-]\d{2}:\d{2}|Z)?$",
+        cleaned,
+    )
+    if match:
+        frac = (match.group("frac") or "")[:6].ljust(6, "0") if match.group("frac") else None
+        tz = match.group("tz") or ""
+        if tz == "Z":
+            tz = "+00:00"
+        cleaned = match.group("head") + (f".{frac}" if frac else "") + tz
     parsed = datetime.fromisoformat(cleaned)
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 

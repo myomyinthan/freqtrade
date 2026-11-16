@@ -63,6 +63,14 @@ class BackupTest(TestCase):
 
 
 class PaperMonitoringAndOpsTest(TestCase):
+    def test_parse_utc_iso_accepts_docker_nanosecond_timestamps(self):
+        parsed = paper_status.parse_utc_iso("2026-11-16T10:49:40.705157351Z")
+        self.assertEqual(parsed, datetime(2026, 11, 16, 10, 49, 40, 705157, tzinfo=timezone.utc))
+        self.assertEqual(
+            paper_status.parse_utc_iso("2026-11-16T10:49:40+00:00"),
+            datetime(2026, 11, 16, 10, 49, 40, tzinfo=timezone.utc),
+        )
+
     def test_alerts_detect_stale_feed_heartbeat_errors_disk_and_restart(self):
         now = datetime(2026, 11, 16, 9, 0, 0, tzinfo=timezone.utc)
         snapshot = {

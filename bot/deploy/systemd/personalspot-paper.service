@@ -1,0 +1,20 @@
+[Unit]
+Description=PersonalSpot Guarded Freqtrade Paper Runner (Dry-Run Spot Only)
+Documentation=file:%h/freqtrade/bot/docs/operations/M4-guard-and-deployment-guide.md
+After=network-online.target personalspot-guard.service
+Requires=personalspot-guard.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/freqtrade
+ExecStart=/usr/bin/env python3 %h/freqtrade/bot/scripts/preflight.py run %h/freqtrade/bot/configs/pilot.local.json --strategy PersonalSpotMacroBreakoutGuarded --local-api
+ExecStop=/usr/bin/env docker stop personalspot-paper-runner
+TimeoutStopSec=35
+Restart=on-failure
+RestartSec=15
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

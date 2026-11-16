@@ -12,7 +12,9 @@ Scope: **Credential-free dry-run deployment only** (no paid cloud host provision
 | Compose manifest | `bot/compose.yaml` — read-only bind mounts for `configs/base.example.json`, `risk/`, `scripts/`, and `strategies/`; writable `0700` `runtime/paper/` mount; **zero host ports exposed** |
 | Paper launcher | `bot/scripts/preflight.py` — enforces `dry_run=true`, `trading_mode=spot`, `force_entry_enable=false`, single-writer `runner.lock`, `0600` `api.auth.json`, and armed guard verification |
 | Separate guard service | `bot/scripts/guard_runner.py` + `bot/risk/guard.py` — atomic `0600` `guard.state.json` persistence, 10s polling target, 30s entry-permission lease, container-loopback `/api/v1/pause` + pending-`buy` cancellation |
-| Guarded strategy | `bot/strategies/PersonalSpotGuarded.py` — wraps `PersonalSpotBaseline` (`H001`) with a fail-closed `confirm_trade_entry` callback that catches `BaseException` and returns `False` so exceptions never escape into Freqtrade's `strategy_safe_wrapper(default_retval=True)` |
+| Guarded strategy | `bot/strategies/PersonalSpotMacroBreakoutGuarded.py` (`H003` active paper pilot; `PersonalSpotGuarded` / `PersonalSpotBreakoutGuarded` remain available for earlier hypotheses) — fail-closed `confirm_trade_entry` that catches `BaseException` and returns `False` so exceptions never escape into Freqtrade's `strategy_safe_wrapper(default_retval=True)` |
+| B17 continuity audit | `bot/scripts/pilot_audit.py` — heartbeat-gap / sleep detection, natural-trade vs force-entry counting, fee/fill drift vs modeled assumptions, and `30d`/`30`-trade gate verdict |
+| User `systemd` bundle | `bot/deploy/systemd/` — credential-free, zero-host-port units for `personalspot-guard`, `personalspot-paper` (`PersonalSpotMacroBreakoutGuarded`), and daily `00:15 UTC` snapshot-rotate + pilot audit |
 
 ## 2. Measured Guard Timing & Enforcement Bounds (`2026-11-16` Drill)
 
@@ -46,10 +48,28 @@ python3 bot/scripts/guard_runner.py bootstrap-day "$settings" \
 python3 bot/scripts/guard_runner.py watch "$settings"
 
 # 4. Terminal / systemd unit 2 (within 30s lease): launch the guarded dry-run container
-python3 bot/scripts/preflight.py run "$settings" --strategy PersonalSpotGuarded --local-api
+python3 bot/scripts/preflight.py run "$settings" \
+  --strategy PersonalSpotMacroBreakoutGuarded --local-api
 ```
 
-## 4. Incident & Recovery Procedures
+For always-on Linux hosts, install the user units in `bot/deploy/systemd/` (see that README). On a sleeping laptop, continuous-uptime claims for `B17` remain invalid until the pilot is moved to a host that does not sleep.
+
+## 4. B17 Continuity & Fill-Drift Audit
+
+```sh
+python3 bot/scripts/paper_status.py digest
+python3 bot/scripts/paper_status.py snapshot-rotate
+python3 bot/scripts/pilot_audit.py --strategy PersonalSpotMacroBreakoutGuarded
+```
+
+`pilot_audit.py` reports `b17_gate.verdict` as one of:
+- `observing_in_progress` — window or natural-trade count still below the `30`/`30` proposal
+- `b17_minimum_observation_met_ready_for_b21_dossier` — continuous observation targets met (still dry-run only)
+- `continuity_or_safety_exception_review_required` — uptime gap, force-entry, or active operational alerts
+
+Passing `B17` validates dry-run operation under simulated fills only. Live trading still requires separate explicit capital/account authorization.
+
+## 5. Incident & Recovery Procedures
 
 ### A. Guard Latch (`daily_loss`, `heartbeat_gap`, `missing_utc_opening_equity`, or `operator_halt`)
 1. Inspect combined container, ledger, and guard state:
@@ -67,8 +87,9 @@ python3 bot/scripts/preflight.py run "$settings" --strategy PersonalSpotGuarded 
    ```
 
 ### B. Consistent Backup & Isolated Restore Verification
-1. Create an online SQLite snapshot and archive aligned copies of `guard.policy.json`, `guard.state.json`, and `m4-sanitized-export.json` (`0600` permissions; Proposed retention: 7 daily + 4 weekly snapshots):
+1. Create an online SQLite snapshot and archive aligned copies of `guard.policy.json`, `guard.state.json`, and a sanitized export (`0600` permissions; managed retention: 7 daily + 4 weekly via `snapshot-rotate`):
    ```sh
+   python3 bot/scripts/paper_status.py snapshot-rotate
    python3 bot/scripts/paper_status.py backup bot/runtime/paper/daily.backup.sqlite
    python3 bot/scripts/paper_status.py export bot/runtime/paper/daily.export.json
    ```

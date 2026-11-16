@@ -1,0 +1,15 @@
+[Unit]
+Description=PersonalSpot Online SQLite Snapshot, 7d/4w Retention & Pilot Audit
+Documentation=file:%h/freqtrade/bot/docs/operations/M4-guard-and-deployment-guide.md
+After=personalspot-guard.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/freqtrade
+ExecStart=/usr/bin/env python3 %h/freqtrade/bot/scripts/paper_status.py snapshot-rotate
+ExecStart=/usr/bin/env python3 %h/freqtrade/bot/scripts/pilot_audit.py --strategy PersonalSpotMacroBreakoutGuarded
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=%h/freqtrade/bot/runtime/paper

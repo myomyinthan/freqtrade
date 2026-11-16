@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily UTC Snapshot & B17 Continuity Audit Timer for PersonalSpot Paper Pilot
+
+[Timer]
+OnCalendar=*-*-* 00:15:00 UTC
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

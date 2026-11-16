@@ -1,7 +1,7 @@
 # Live-Authorization Boundary Decision Dossier (`B21`)
 
 Prepared: `2026-11-16`  
-Engineering Deliverable Status: **M0–M4 Research, One-Shot Holdout (`H003` PASSED), Paper Runner, Monitoring & Persisted Guard Infrastructure COMPLETE (`34/34` container tests passing)**  
+Engineering Deliverable Status: **M0–M4 Research, One-Shot Holdout (`H003` PASSED), Paper Runner, Monitoring, Persisted Guard, `B17` Continuity Audit & `B20` Systemd Bundle COMPLETE (`43/43` container tests passing)**  
 Current Operating State: **Monitored Dry-Run Paper Pilot Active (`PersonalSpotMacroBreakoutGuarded` + `guard_runner.py`); Live Trading Still Requires Separate Explicit Capital/Account Authorization After Paper Observation (`B17`)**
 
 ---
@@ -17,7 +17,8 @@ All planned engineering milestones (`M0` through `M4`) are implemented, tested i
   - `H002` (`PersonalSpotBreakout`, `7d/3d` Donchian + `SMA200`) swung `train + validation` positive (`+24.00 USDT` / `+2.40%`), missing its `-2.00%` bear-window cap (`-2.58%`).
   - `H003` (`PersonalSpotMacroBreakout`, `14d/4d` Donchian + `SMA120/SMA360` macro stack) achieved **`+7.76%` in training** (profit factor `2.36`, daily Sharpe `1.38`, wallet DD `2.80%`), **`-2.34%` in the `-43.51%` validation crash** (`3.23%` wallet DD), and — after user authorization to freeze `H003` and execute the one-shot holdout (`untouched-be44e132bb55-20260422-20261114`) — **PASSED the untouched out-of-sample test (`20260422–20261114`) with `+1.76%` (`+17.62 USDT`) vs `-12.41%` buy-and-hold, profit factor `3.90`, daily Sharpe `1.22`, and `1.28%` wallet drawdown** (`0.34%` realized DD, `+1.21%` even after `+50 bps`/side adverse fill stress; full `1,031`-day cumulative net gain `+71.84 USDT` across `71` trades with all 3 pairs net positive: `ETH +36.29`, `BTC +18.03`, `SOL +17.52` USDT; `bot/docs/research/H003-binance-usdt-spot-report.md`).
   - The `20260422–20261114` holdout is now **consumed** (`research.py` verified blocking any second run), and `PersonalSpotMacroBreakoutGuarded` advances into the **monitored dry-run paper pilot (`B17`)**.
-- **Paper operations & persisted daily entry-halt guard (`M3`–`M4`):** Single-writer locking, rotating logs, sanitized exports, local alerts, online SQLite backup + isolated restore, `PersonalSpotGuarded` fail-closed `confirm_trade_entry` (`BaseException -> False`), and separate `guard_runner.py` polling/pause/entry-only-cancellation service (`5.9–18.5 ms` poll, `0.94–1.13s` container API pause + reconciliation) are all verified.
+- **Paper operations & persisted daily entry-halt guard (`M3`–`M4`):** Single-writer locking, rotating logs, sanitized exports, local alerts, online SQLite backup + isolated restore, guarded fail-closed `confirm_trade_entry` (`BaseException -> False`), and separate `guard_runner.py` polling/pause/entry-only-cancellation service (`5.9–18.5 ms` poll, `0.94–1.13s` container API pause + reconciliation) are all verified.
+- **`B17` continuity audit & `B20` packaging:** `bot/scripts/pilot_audit.py` tracks heartbeat gaps, natural-trade progress, and fill/fee drift; credential-free user `systemd` units live under `bot/deploy/systemd/` for optional always-on hosts (laptop sleep still invalidates continuous-uptime claims until installed there).
 
 Because **engineering readiness does not substitute for positive economic expectancy**, the project stays in **research / dry-run mode**.
 
@@ -30,7 +31,9 @@ Because **engineering readiness does not substitute for positive economic expect
 | Engine & version lock | `bot/VERSION.lock.json`, `bot/compose.yaml` | Pinned `2026.10` (`linux/arm64`), read-only overlay mounts, zero host ports |
 | Venue capability review | `bot/docs/venues/binance-usdt-spot.md` | `BTC/USDT`, `ETH/USDT`, `SOL/USDT` `TRADING`, `5 USDT` min notional, `0.10%` provisional regular-user fee |
 | Historical evaluation | `bot/docs/research/H001-…`, `H002-…`, `H003-binance-usdt-spot-report.md` | `H001` FAIL; `H002` +2.40% dev; **`H003` PASSED untouched holdout (`+1.76%` vs `-12.41%` mkt, PF `3.90`, `1.28%` wallet DD; holdout now consumed)** |
-| Automated test suite | `bot/tests/test_*.py` (`34` tests) | `34 / 34` passed inside pinned container with `--network none` |
+| Automated test suite | `bot/tests/test_*.py` (`43` tests) | `43 / 43` passed inside pinned container with `--network none` |
+| B17 continuity audit | `bot/scripts/pilot_audit.py` | Live pilot reports `observing_in_progress` (cash regime; `0` natural trades yet; no uptime gaps while running) |
+| B20 host bundle | `bot/deploy/systemd/` | Credential-free, zero-host-port units + README; not yet installed on an always-on host |
 
 ---
 

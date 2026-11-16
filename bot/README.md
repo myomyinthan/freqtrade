@@ -61,6 +61,7 @@ python3 bot/scripts/preflight.py run "$settings" --strategy PersonalSpotBaseline
 python3 bot/scripts/paper_status.py status
 python3 bot/scripts/paper_status.py digest
 python3 bot/scripts/paper_status.py signals
+python3 bot/scripts/pilot_audit.py --strategy PersonalSpotMacroBreakoutGuarded
 python3 bot/scripts/paper_status.py pause
 python3 bot/scripts/paper_status.py resume
 python3 bot/scripts/paper_status.py snapshot-rotate
@@ -70,17 +71,17 @@ python3 bot/scripts/paper_status.py restore-drill bot/runtime/paper/morning.back
 python3 bot/scripts/paper_status.py export bot/runtime/paper/sanitized-status.json
 ```
 
-`status` reports container health, SQLite positions/orders, rotating logs, guard state, local alerts (`failed_heartbeat`, `stale_feed`, `repeated_errors`, `disk_pressure`, `restart_detected`, `guard_latched`, `guard_stale`), and free disk space.
+`status` reports container health, SQLite positions/orders, rotating logs, guard state, local alerts (`failed_heartbeat`, `stale_feed`, `repeated_errors`, `disk_pressure`, `restart_detected`, `guard_latched`, `guard_stale`), and free disk space. `pilot_audit.py` tracks the `B17` `30`-day / `30`-trade gate, heartbeat continuity, and paper fill/fee drift versus modeled assumptions.
 
 ## Operate with the persisted daily entry-halt guard (`M4`)
 
-Initialize `guard.policy.json`, register the UTC day baseline when starting mid-day on a reconciled ledger, keep `guard_runner.py watch` running in a separate process (`10s` poll, `30s` lease), and launch `--strategy PersonalSpotGuarded --local-api`. It halts new entries fail-closed without claiming a guaranteed monetary loss ceiling on open positions.
+Initialize `guard.policy.json`, register the UTC day baseline when starting mid-day on a reconciled ledger, keep `guard_runner.py watch` running in a separate process (`10s` poll, `30s` lease), and launch `--strategy PersonalSpotMacroBreakoutGuarded --local-api` for the active `H003` paper pilot (or an earlier guarded hypothesis). It halts new entries fail-closed without claiming a guaranteed monetary loss ceiling on open positions. Always-on host units live under `bot/deploy/systemd/`.
 
 ```sh
 python3 bot/scripts/guard_runner.py init "$settings" --max-loss-quote 25 --max-age-seconds 30 --poll-interval-seconds 10
 python3 bot/scripts/guard_runner.py bootstrap-day "$settings" --reason "initial UTC day paper baseline"
 python3 bot/scripts/guard_runner.py watch "$settings"
-python3 bot/scripts/preflight.py run "$settings" --strategy PersonalSpotGuarded --local-api
+python3 bot/scripts/preflight.py run "$settings" --strategy PersonalSpotMacroBreakoutGuarded --local-api
 ```
 
 Reports and runbooks: [H001 research report](docs/research/H001-binance-usdt-spot-report.md), [H002 pre-registration](docs/research/H002-preregistration.md), [H002 research report](docs/research/H002-binance-usdt-spot-report.md), [H003 pre-registration](docs/research/H003-preregistration.md), [H003 research report](docs/research/H003-binance-usdt-spot-report.md), [M3 smoke & drills](docs/operations/M3-paper-smoke-and-drills.md), [M4 guard & deployment guide](docs/operations/M4-guard-and-deployment-guide.md), and [Live-boundary decision dossier](docs/operations/M4-decision-dossier.md).

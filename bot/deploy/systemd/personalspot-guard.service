@@ -1,0 +1,20 @@
+[Unit]
+Description=PersonalSpot M4 Daily Entry-Halt Guard Daemon (Dry-Run Paper Only)
+Documentation=file:%h/freqtrade/bot/docs/operations/M4-guard-and-deployment-guide.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/freqtrade
+ExecStart=/usr/bin/env python3 %h/freqtrade/bot/scripts/guard_runner.py watch %h/freqtrade/bot/configs/pilot.local.json
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=%h/freqtrade/bot/runtime/paper
+
+[Install]
+WantedBy=default.target
