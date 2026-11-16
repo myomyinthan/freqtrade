@@ -451,7 +451,8 @@ class Guard:
         observed = snapshot.observed_at.astimezone(timezone.utc)
         age = now - observed
         day = observed.date().isoformat()
-        opening_snapshot = observed == observed.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_midnight = observed.replace(hour=0, minute=0, second=0, microsecond=0)
+        exact_midnight = observed == day_midnight
         valid = (
             timedelta() <= age <= self.max_age and snapshot.reconciled
             and snapshot.equity.is_finite() and snapshot.equity > 0
@@ -472,8 +473,15 @@ class Guard:
                 state["latch"] = state["latch"] or "invalid_or_stale_snapshot"
             if last is not None and observed - last > self.max_age:
                 state["latch"] = state["latch"] or "heartbeat_gap"
+            continuous_midnight_rollover = (
+                last is not None
+                and state["utc_day"] == (observed.date() - timedelta(days=1)).isoformat()
+                and last <= day_midnight <= observed
+                and (observed - last) <= self.max_age
+                and (observed - day_midnight) <= self.max_age
+            )
             if state["utc_day"] != day:
-                if opening_snapshot and valid and snapshot.net_flows_today == 0:
+                if (exact_midnight or continuous_midnight_rollover) and valid and snapshot.net_flows_today == 0:
                     state["opening_equity"] = str(snapshot.equity)
                 else:
                     state["opening_equity"] = None

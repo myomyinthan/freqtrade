@@ -186,6 +186,53 @@ class GuardAccountingAndMatrixTest(TestCase):
         )
         self.assertFalse(reloaded_guard.entries_allowed(next_midnight))
 
+    def test_continuous_ten_second_polling_across_utc_midnight_rolls_baseline_cleanly(self):
+        # Armed guard polling every 10s crosses UTC midnight at 23:59:54.63Z -> 00:00:04.64Z with open position.
+        open_snap = reconstruct_fill_stream_snapshot(
+            account="paper:binance:USDT",
+            observed_at=self.midnight,
+            starting_quote=Decimal("1000"),
+            quote_currency="USDT",
+            fills=(),
+            executable_bid_marks={},
+            exit_fee_rate=Decimal("0.001"),
+        )
+        self.guard.observe(open_snap, self.midnight)
+
+        pre_midnight = self.midnight + timedelta(hours=23, minutes=59, seconds=54, microseconds=630000)
+        # Simulate uninterrupted day by updating state to 23:59:54.63Z via a fresh guard whose day was bootstrapped
+        live_guard = Guard(self.root / "live.state.json", "paper:binance:USDT", Decimal("20"), timedelta(seconds=30))
+        live_guard.bootstrap_day_baseline(
+            reconstruct_fill_stream_snapshot(
+                account="paper:binance:USDT",
+                observed_at=pre_midnight,
+                starting_quote=Decimal("1012.50"),
+                quote_currency="USDT",
+                fills=(),
+                executable_bid_marks={},
+                exit_fee_rate=Decimal("0.001"),
+            ),
+            pre_midnight,
+            "mid-day start",
+        )
+        post_midnight = pre_midnight + timedelta(seconds=10, microseconds=10000)
+        rolled = live_guard.observe(
+            reconstruct_fill_stream_snapshot(
+                account="paper:binance:USDT",
+                observed_at=post_midnight,
+                starting_quote=Decimal("1013.25"),
+                quote_currency="USDT",
+                fills=(),
+                executable_bid_marks={},
+                exit_fee_rate=Decimal("0.001"),
+            ),
+            post_midnight,
+        )
+        self.assertIsNone(rolled["latch"])
+        self.assertEqual(rolled["utc_day"], "2026-11-17")
+        self.assertEqual(rolled["opening_equity"], "1013.25")
+        self.assertTrue(live_guard.entries_allowed(post_midnight))
+
     def test_sqlite_ledger_snapshot_and_api_unavailable_during_breach(self):
         db_file = self.root / "baseline.paper.sqlite"
         with closing(sqlite3.connect(db_file)) as db:
