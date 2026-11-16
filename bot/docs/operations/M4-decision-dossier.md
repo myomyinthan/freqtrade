@@ -1,8 +1,8 @@
 # Live-Authorization Boundary Decision Dossier (`B21`)
 
 Prepared: `2026-11-16`  
-Engineering Deliverable Status: **M0–M4 Research, Paper Runner, Monitoring & Persisted Guard Infrastructure COMPLETE (`29/29` container tests passing)**  
-Live Trading Recommendation: **DO NOT ENABLE LIVE TRADING (`H001` failed economic validation; system stops at the live authorization boundary)**
+Engineering Deliverable Status: **M0–M4 Research, One-Shot Holdout (`H003` PASSED), Paper Runner, Monitoring & Persisted Guard Infrastructure COMPLETE (`34/34` container tests passing)**  
+Current Operating State: **Monitored Dry-Run Paper Pilot Active (`PersonalSpotMacroBreakoutGuarded` + `guard_runner.py`); Live Trading Still Requires Separate Explicit Capital/Account Authorization After Paper Observation (`B17`)**
 
 ---
 
@@ -15,8 +15,8 @@ All planned engineering milestones (`M0` through `M4`) are implemented, tested i
 - **Economic outcomes (`H001` -> `H002` -> `H003`):**
   - `H001` (`PersonalSpotBaseline`, `1h` SMA20/50) lost `-2.26%` in training and `-5.09%` in validation (`-73.54 USDT` combined).
   - `H002` (`PersonalSpotBreakout`, `7d/3d` Donchian + `SMA200`) swung `train + validation` positive (`+24.00 USDT` / `+2.40%`), missing its `-2.00%` bear-window cap (`-2.58%`).
-  - `H003` (`PersonalSpotMacroBreakout`, `14d/4d` Donchian + `SMA120/SMA360` macro stack) achieved **`+7.76%` in training** (profit factor `2.36`, daily Sharpe `1.38`, wallet DD `2.80%`) and **`+5.42%` (`+54.22 USDT`) across `train + validation`** (positive on all 3 pairs and surviving `2×` fees and `+50 bps`/side slippage), while posting `-2.34%` (`3.23%` wallet DD) during the `-43.51%` validation bear crash — `0.34%` (`3.40 USDT`) shy of its strict `-2.00%` bear-window cap (`bot/docs/research/H003-binance-usdt-spot-report.md`).
-  - To prevent validation curve-fitting, further tuning stopped at `H003` and the **untouched holdout (`20260422–20261114`) remains 100% sealed**, awaiting an explicit user decision on whether to freeze `H003` (`PersonalSpotMacroBreakoutGuarded`) for the one-shot holdout test and 30-day paper pilot.
+  - `H003` (`PersonalSpotMacroBreakout`, `14d/4d` Donchian + `SMA120/SMA360` macro stack) achieved **`+7.76%` in training** (profit factor `2.36`, daily Sharpe `1.38`, wallet DD `2.80%`), **`-2.34%` in the `-43.51%` validation crash** (`3.23%` wallet DD), and — after user authorization to freeze `H003` and execute the one-shot holdout (`untouched-be44e132bb55-20260422-20261114`) — **PASSED the untouched out-of-sample test (`20260422–20261114`) with `+1.76%` (`+17.62 USDT`) vs `-12.41%` buy-and-hold, profit factor `3.90`, daily Sharpe `1.22`, and `1.28%` wallet drawdown** (`0.34%` realized DD, `+1.21%` even after `+50 bps`/side adverse fill stress; full `1,031`-day cumulative net gain `+71.84 USDT` across `71` trades with all 3 pairs net positive: `ETH +36.29`, `BTC +18.03`, `SOL +17.52` USDT; `bot/docs/research/H003-binance-usdt-spot-report.md`).
+  - The `20260422–20261114` holdout is now **consumed** (`research.py` verified blocking any second run), and `PersonalSpotMacroBreakoutGuarded` advances into the **monitored dry-run paper pilot (`B17`)**.
 - **Paper operations & persisted daily entry-halt guard (`M3`–`M4`):** Single-writer locking, rotating logs, sanitized exports, local alerts, online SQLite backup + isolated restore, `PersonalSpotGuarded` fail-closed `confirm_trade_entry` (`BaseException -> False`), and separate `guard_runner.py` polling/pause/entry-only-cancellation service (`5.9–18.5 ms` poll, `0.94–1.13s` container API pause + reconciliation) are all verified.
 
 Because **engineering readiness does not substitute for positive economic expectancy**, the project stays in **research / dry-run mode**.
@@ -29,16 +29,14 @@ Because **engineering readiness does not substitute for positive economic expect
 | --- | --- | --- |
 | Engine & version lock | `bot/VERSION.lock.json`, `bot/compose.yaml` | Pinned `2026.10` (`linux/arm64`), read-only overlay mounts, zero host ports |
 | Venue capability review | `bot/docs/venues/binance-usdt-spot.md` | `BTC/USDT`, `ETH/USDT`, `SOL/USDT` `TRADING`, `5 USDT` min notional, `0.10%` provisional regular-user fee |
-| Historical evaluation | `bot/docs/research/H001-binance-usdt-spot-report.md` | Technical **PASS**, Economic **FAIL**; `20260422–20261114` holdout **SEALED** |
-| Paper smoke & incident drills | `bot/docs/operations/M3-paper-smoke-and-drills.md` | Duplicate-writer reject, pause/resume, network outage alert + recovery, online backup + isolated restore **PASSED** |
-| Persisted daily entry-halt guard | `bot/risk/guard.py`, `bot/scripts/guard_runner.py`, `bot/strategies/PersonalSpotGuarded.py`, `bot/docs/operations/M4-guard-and-deployment-guide.md` | Normalized ledger/fill/flow equity, fail-closed `strategy_safe_wrapper` integration test, live `heartbeat_gap` & `operator_halt` drills + latched restart rejection **PASSED** |
-| Automated test suite | `bot/tests/test_*.py` (`29` tests) | `29 / 29` passed inside pinned container with `--network none` |
+| Historical evaluation | `bot/docs/research/H001-…`, `H002-…`, `H003-binance-usdt-spot-report.md` | `H001` FAIL; `H002` +2.40% dev; **`H003` PASSED untouched holdout (`+1.76%` vs `-12.41%` mkt, PF `3.90`, `1.28%` wallet DD; holdout now consumed)** |
+| Automated test suite | `bot/tests/test_*.py` (`34` tests) | `34 / 34` passed inside pinned container with `--network none` |
 
 ---
 
 ## 3. Residual Risks & Venue Limitations
 
-1. **Negative strategy expectancy (`H001`):** Deploying `H001` with real capital would be expected to lose money to whipsaws and fee drag. A new pre-registered hypothesis (`H002`) must pass training, validation, cost stress, and the sealed holdout (`20260422–20261114`) first, followed by the `B17` 30-day / 30-trade natural paper observation window.
+1. **Selective sample size & holdout consumption (`H003`):** While `H003` was profitable across `train` (`+7.76%`, `45` trades), full `train + val` (`+5.42%`, `60` trades), and the untouched holdout (`+1.76%`, `11` trades during a `-12.41%` market decline; `+7.18%` / `+71.84 USDT` across all `1,031` days on `100 USDT` max slot exposure), `11` holdout trades over `206` days is a low-frequency sample (`p = 0.2737`) on a present-day 3-pair universe with survivorship bias. Complete the `B17` monitored paper pilot (`30` days / `30` natural trades, extended if trades are sparse) before considering real capital.
 2. **Polling guard is not a hard loss cap:** `guard_runner.py` halts *new* entries within `~10s` (or `<=30s` lease expiry if the guard daemon dies) and cancels open `buy` orders, while open spot holdings remain exposed to adverse price gaps, exchange outages, or off-exchange stoploss delays.
 3. **Simulated fills vs. live book microstructure:** Candle backtests and dry-run order-book top-1 fills do not prove queue priority, partial-fill dust handling, API rate-limit throttling under volatility, or exchange maintenance behavior.
 4. **Unverified operator jurisdiction & fee tier:** Public `api.binance.com` market data succeeded without credentials; personal Binance account eligibility, KYC/jurisdiction compliance, IP-restricted spot-only API keys (withdrawals disabled), and actual maker/taker fee tier remain unverified.

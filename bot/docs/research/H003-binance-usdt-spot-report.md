@@ -2,7 +2,7 @@
 
 Prepared: `2026-11-16`  
 Pre-registration: [H003-preregistration.md](H003-preregistration.md)  
-Status: **Technical validation PASSED · Strongest Development Candidate (`+7.76%` Train, `+5.42%` Combined `Train + Val`, PF `2.36` Train, Wallet DD `<= 3.23%`) · Validation Bear-Cap Gate Missed by `0.34%` (`-2.34%` vs `-2.00%` Cap) · Untouched Holdout Preserved SEALED**
+Status: **Technical validation PASSED · One-Shot Untouched Holdout (`20260422–20261114`) PASSED (`+1.76%` vs `-12.41%` Market, PF `3.90`, Wallet DD `1.28%`) · Promoted to Monitored Guarded Paper Pilot (`B17`)**
 
 ---
 
@@ -99,9 +99,22 @@ Because `H003` holds winning trends `16.5` days on average (`60` total trades ac
 | 6 | Max account drawdown | Realized & wallet DD `<= 8.0%` in `train` and `validation` | `1.97% / 2.80%` train; `2.61% / 3.23%` validation | **PASS** |
 | 7 | Pair concentration | Top pair `<= 85%` of positive pair gains across `train + val` | `ETH` `53.4%` (`+28.96`), `BTC` `43.2%` (`+23.43`), `SOL` `3.4%` (`+1.83`) — all 3 positive! | **PASS** |
 
-### Why Stopping Iteration Here Protects Research Integrity
-1. **Honoring the pre-registered `-2.00%` rule:** During the `-43.51%` validation crash (`10%` passive spot allocation = `-4.35%` loss), `H003` held validation loss to `-2.34%` (`3.23%` max wallet drawdown) while generating `+7.76%` in training (`+5.42%` net across all `825` days). Because `-2.34%` fell `3.40` USDT (`0.34%`) short of our strict `-2.00%` pre-registered cap, we **did not open `--window test`** (`20260422–20261114` remains 100% sealed).
-2. **Refusing to curve-fit `validation`:** Running further micro-variants (`H004`, `H005`…) solely to trim `3.40` USDT off a `15`-trade bear window would turn `validation` into an overfitted training set.
-3. **Recommended path forward:**
-   - **Recommended primary paper candidate:** `PersonalSpotMacroBreakoutGuarded` (`H003` + `M4` persisted daily entry-halt guard) is now the strongest, lowest-drawdown, cost-resilient candidate in the repository.
-   - **Explicit user choice on the sealed holdout (`20260422–20261114`):** If you judge `-2.34%` during a `-43.51%` bear market acceptable relative to your personal risk tolerance, you may explicitly authorize freezing `H003` as the final candidate and executing the **one-shot untouched holdout (`--window test`)** once — with that user-approved threshold revision transparently recorded in the protocol before unsealing.
+### One-Shot Untouched Holdout Evaluation (`B13` — `20260422–20261114`)
+
+Following explicit user authorization to accept `-2.34%` during the `-43.51%` validation crash without modifying `PersonalSpotMacroBreakout.py` (`strategy_sha256 = 521c97ecf8253c8a06a65471b36f2631113c01afba9825a37252c0427a2349bb`), the untouched holdout window (`20260422–20261114`, `206` days) was executed **exactly once** (`untouched-be44e132bb55-20260422-20261114`), and a second attempt was verified rejected (`[Errno 17] File exists`).
+
+| Untouched Holdout Metric (`20260422–20261114`) | Observed Result |
+| --- | ---: |
+| **Strategy Net Return / Net P&L** (`1,000` USDT wallet, `100` USDT max active exposure) | **`+1.76%` (`+17.62` USDT; `+17.62%` on `100` USDT active slot allocation)** |
+| **Equal-Weight Buy & Hold (`0.10%` fee)** | **`-12.41%`** (`BTC -10.69%`, `ETH -17.24%`, `SOL -9.31%`) |
+| **CAGR / Daily Wallet Sharpe / Daily Wallet Calmar** | **`+3.16%` / `1.22` / `12.82`** |
+| **Realized Max Drawdown / Daily Wallet Max Drawdown** | **`0.34%` (`3.46` USDT) / `1.28%` (`13.21` USDT)** |
+| **Completed Trades / Left Open / Stoploss Hits** | **`11` (`0.05` / day) / `0` left open / `0` stoploss hits (`11/11` `macro_channel_exit`)** |
+| **Win Rate / Profit Factor / Expectancy** | **`45.45%` (`5` W / `6` L) / `3.90` / `+1.60` USDT per trade** |
+| **Average Win / Average Loss / Avg Duration** | **`+4.74` USDT / `-1.01` USDT / `11d 01h 44m`** |
+| **Hours in Market / Quote Turnover / Fees Paid** | `1,923` h (`38.9%` of window; flat in cash in June & Nov) / `1,114.13` USDT / `1.11` USDT |
+| **Per-Pair Net P&L** | `SOL/USDT` **`+15.69` USDT** (`3/3` W), `ETH/USDT` **`+7.33` USDT** (`2/3` W), `BTC/USDT` `-5.40` USDT (`0/5` W) |
+| **Adverse Fill Cost Stress (`+5 / +10 / +25 / +50` bps per side)** | **`+1.71%` / `+1.65%` / `+1.48%` / `+1.21%`** (remains solidly profitable even at `+50 bps`/side) |
+| **Full `1,031`-Day Cumulative Span (`Train + Val + Untouched Test`)** | **`+71.84` USDT (`+7.18%` wallet / `+71.84%` on `100` USDT active cap; `71` trades; all 3 pairs net positive: `ETH +36.29`, `BTC +18.03`, `SOL +17.52` USDT)** |
+
+**B13 Final Verdict — PASS (with low-frequency sample caveat):** `H003` passed the untouched out-of-sample holdout (`+1.76%` net profit and `1.28%` wallet drawdown during a `-12.41%` declining market, `3.90` profit factor, positive under `+50 bps`/side fill stress). Because `H003` is a selective multi-week breakout strategy (`11` holdout trades over `206` days; `p = 0.2737` on trade mean), the holdout is now **consumed** for this dataset and the strategy advances to the **Milestone 3/4 monitored dry-run paper pilot (`PersonalSpotMacroBreakoutGuarded`)** — never directly to unattended live capital without completing paper observation and explicit live risk authorization.
