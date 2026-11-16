@@ -110,6 +110,84 @@ class PaperPreflightTest(unittest.TestCase):
         self.assertEqual(process.stderr.splitlines()[-2:], ["--strategy", "PaperScaffold"])
         self.assertEqual(json.loads(process.stdout), preflight.resolve_config(self.settings))
 
+    def test_duplicate_writer_lock_blocks_second_paper_runner(self):
+        import fcntl
+
+        self.paper_dir.mkdir(parents=True)
+        lock_file = self.paper_dir / preflight.RUNNER_LOCK_NAME
+        with lock_file.open("a+", encoding="utf-8") as held:
+            fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            code, launcher = self.invoke(mode="run")
+            self.assertEqual(code, 2)
+            launcher.assert_not_called()
+
+    def test_local_api_creates_restricted_auth_and_loopback_only_binding(self):
+        self.settings_file.write_text(json.dumps(self.settings), encoding="utf-8")
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(preflight, "PAPER_DIR", self.paper_dir),
+            patch.object(
+                sys, "argv",
+                ["preflight.py", "run", str(self.settings_file), "--state", "paused", "--local-api"],
+            ),
+            patch.object(preflight, "run_container", return_value=0) as launcher,
+            redirect_stderr(io.StringIO()),
+            redirect_stdout(io.StringIO()),
+        ):
+            code = preflight.main()
+        self.assertEqual(code, 0)
+        launcher.assert_called_once()
+        auth_file = self.paper_dir / preflight.API_AUTH_NAME
+        self.assertEqual(auth_file.stat().st_mode & 0o777, 0o600)
+        with patch.object(preflight, "PAPER_DIR", self.paper_dir):
+            api_cfg = preflight.api_server_config()
+        self.assertEqual(api_cfg["listen_ip_address"], "127.0.0.1")
+        self.assertIs(api_cfg["enabled"], True)
+        self.assertEqual(launcher.call_args.args[2]["initial_state"], "paused")
+
+    def test_guarded_strategy_refuses_running_launch_without_armed_guard_and_local_api(self):
+        self.settings_file.write_text(json.dumps(self.settings), encoding="utf-8")
+        # 1. Missing --local-api is rejected.
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(preflight, "PAPER_DIR", self.paper_dir),
+            patch.object(
+                sys, "argv",
+                ["preflight.py", "run", str(self.settings_file), "--strategy", "PersonalSpotGuarded"],
+            ),
+            patch.object(preflight, "run_container", return_value=0) as launcher,
+            redirect_stderr(io.StringIO()),
+            redirect_stdout(io.StringIO()),
+        ):
+            code = preflight.main()
+        self.assertEqual(code, 2)
+        launcher.assert_not_called()
+
+        # 2. Policy present without armed fresh guard.state.json still fails closed on running launch.
+        self.paper_dir.mkdir(parents=True, exist_ok=True)
+        (self.paper_dir / preflight.GUARD_POLICY_NAME).write_text(json.dumps({
+            "account": "paper:kraken:USD",
+            "max_loss_quote": "20",
+            "max_age_seconds": 30,
+        }), encoding="utf-8")
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(preflight, "PAPER_DIR", self.paper_dir),
+            patch.object(
+                sys, "argv",
+                [
+                    "preflight.py", "run", str(self.settings_file),
+                    "--strategy", "PersonalSpotGuarded", "--local-api",
+                ],
+            ),
+            patch.object(preflight, "run_container", return_value=0) as launcher,
+            redirect_stderr(io.StringIO()),
+            redirect_stdout(io.StringIO()),
+        ):
+            code = preflight.main()
+        self.assertEqual(code, 2)
+        launcher.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

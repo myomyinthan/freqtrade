@@ -1,0 +1,728 @@
+"""Inspect, monitor, pause/reconcile, back up, restore-test and export paper operations."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import json
+import os
+import re
+import shutil
+import sqlite3
+import subprocess
+from contextlib import closing
+from datetime import datetime, timezone
+from pathlib import Path
+
+from preflight import (
+    API_AUTH_NAME,
+    BASELINE_DB_NAME,
+    GUARD_POLICY_NAME,
+    GUARD_STATE_NAME,
+    LOG_REL_PATH,
+    PAPER_DIR,
+    check_paper_paths,
+    read_settings,
+)
+
+CONTAINER_NAME = "personalspot-paper-runner"
+BASELINE = "PersonalSpotBaseline"
+DB = PAPER_DIR / BASELINE_DB_NAME
+LOG_FILE = PAPER_DIR / LOG_REL_PATH
+API_AUTH = PAPER_DIR / API_AUTH_NAME
+GUARD_POLICY = PAPER_DIR / GUARD_POLICY_NAME
+GUARD_STATE = PAPER_DIR / GUARD_STATE_NAME
+
+DEFAULT_MAX_HEARTBEAT_AGE = 120.0
+DEFAULT_MAX_CANDLE_AGE = 7200.0
+DEFAULT_MIN_FREE_BYTES = 1024 * 1024 * 1024
+DEFAULT_ERROR_THRESHOLD = 3
+
+HEARTBEAT_RE = re.compile(
+    r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) - .* - INFO - "
+    r"Bot heartbeat\. PID=\d+, version='[^']+', state='(?P<state>[A-Z_]+)'"
+)
+ERROR_LINE_RE = re.compile(r" - (?:ERROR|CRITICAL) - ")
+STATE_CHANGE_RE = re.compile(
+    r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) - .* - INFO - "
+    r"Changing state(?: from [A-Z_]+)? to: (?P<state>[A-Z_]+)"
+)
+
+REDACT_KEYS = {
+    "password", "jwt_secret_key", "ws_token", "secret", "key", "api_key",
+    "token", "access_token", "refresh_token", "authorization",
+}
+REDACT_PATTERNS = (
+    (re.compile(r"(?i)(authorization\s*[:=]\s*(?:basic|bearer)\s+)[A-Za-z0-9._~+/=-]+"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)((?:password|jwt_secret_key|ws_token|secret|api_key|token)\s*['\"]?\s*[:=]\s*['\"]?)[^'\",\s}]+"), r"\1[REDACTED]"),
+)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def parse_utc_iso(value: str) -> datetime:
+    cleaned = value.strip()
+    if cleaned.endswith("Z"):
+        cleaned = cleaned[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(cleaned)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def parse_log_ts(value: str) -> datetime:
+    return datetime.strptime(value, "%Y-%m-%d %H:%M:%S,%f").replace(tzinfo=timezone.utc)
+
+
+def sanitize_text(text: str) -> str:
+    cleaned = text
+    for pattern, replacement in REDACT_PATTERNS:
+        cleaned = pattern.sub(replacement, cleaned)
+    return cleaned
+
+
+def sanitize_value(value):
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            if str(key).lower() in REDACT_KEYS:
+                result[key] = "[REDACTED]"
+            else:
+                result[key] = sanitize_value(item)
+        return result
+    if isinstance(value, list):
+        return [sanitize_value(item) for item in value]
+    if isinstance(value, str):
+        return sanitize_text(value)
+    return value
+
+
+def connect_readonly(path: Path) -> sqlite3.Connection:
+    if not path.is_file():
+        raise ValueError(f"SQLite ledger is unavailable: {path.name}")
+    uri = path.absolute().as_uri()
+    try:
+        conn = sqlite3.connect(uri + "?mode=ro", uri=True)
+        conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchall()
+        return conn
+    except sqlite3.OperationalError:
+        wal = Path(str(path) + "-wal")
+        if wal.exists() and wal.stat().st_size > 0:
+            raise
+        return sqlite3.connect(uri + "?mode=ro&immutable=1", uri=True)
+
+
+def ledger(path: Path) -> dict[str, int]:
+    with closing(connect_readonly(path)) as db:
+        return {
+            "open_positions": db.execute("SELECT count(*) FROM trades WHERE is_open").fetchone()[0],
+            "closed_positions": db.execute("SELECT count(*) FROM trades WHERE NOT is_open").fetchone()[0],
+            "pending_orders": db.execute("SELECT count(*) FROM orders WHERE ft_is_open").fetchone()[0],
+        }
+
+
+def order_side_breakdown(path: Path) -> dict[str, int] | None:
+    if not path.is_file():
+        return None
+    with closing(connect_readonly(path)) as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(orders)").fetchall()}
+        if "ft_order_side" not in columns:
+            return None
+        entries = db.execute(
+            "SELECT count(*) FROM orders WHERE ft_is_open AND ft_order_side = 'buy'"
+        ).fetchone()[0]
+        exits = db.execute(
+            "SELECT count(*) FROM orders WHERE ft_is_open AND ft_order_side = 'sell'"
+        ).fetchone()[0]
+        return {"pending_entry_orders": entries, "pending_exit_orders": exits}
+
+
+def backup(destination: Path) -> None:
+    with closing(connect_readonly(DB)) as source:
+        # Reserve the filename so repeated or concurrent backups cannot replace a prior backup.
+        destination.touch(mode=0o600, exist_ok=False)
+        try:
+            with closing(sqlite3.connect(destination)) as copy:
+                source.backup(copy)
+                copy.execute("PRAGMA journal_mode=DELETE")
+                if copy.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                    raise ValueError("backup failed SQLite quick_check")
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
+
+
+def restore_drill(backup_path: Path, isolated_dir: Path, source_db: Path | None = None) -> dict:
+    live_db = DB if source_db is None else source_db
+    if not backup_path.is_file() or backup_path.is_symlink():
+        raise ValueError("backup_path must be an existing regular file")
+    resolved_paper = PAPER_DIR.resolve()
+    resolved_target = isolated_dir.resolve()
+    if resolved_target == resolved_paper or resolved_paper in resolved_target.parents:
+        raise ValueError("isolated restore directory must be outside bot/runtime/paper")
+    if isolated_dir.exists():
+        raise ValueError("isolated restore directory must not already exist")
+
+    before_sha = sha256_file(live_db) if live_db.is_file() else None
+    isolated_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+    restored_db = isolated_dir / "restored.paper.sqlite"
+    with closing(connect_readonly(backup_path)) as src:
+        restored_db.touch(mode=0o600, exist_ok=False)
+        with closing(sqlite3.connect(restored_db)) as dst:
+            src.backup(dst)
+            dst.execute("PRAGMA journal_mode=DELETE")
+
+    with closing(connect_readonly(restored_db)) as check_db:
+        integrity = check_db.execute("PRAGMA integrity_check").fetchone()
+        if integrity != ("ok",):
+            raise ValueError(f"isolated restore failed integrity_check: {integrity}")
+        tables = sorted(
+            row[0]
+            for row in check_db.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        )
+    if not {"trades", "orders"} <= set(tables):
+        raise ValueError("restored SQLite database is missing required Freqtrade tables")
+
+    summary = ledger(restored_db)
+    sides = order_side_breakdown(restored_db)
+    after_sha = sha256_file(live_db) if live_db.is_file() else None
+    if before_sha != after_sha:
+        raise ValueError("live paper database changed during isolated restore drill")
+    return {
+        "restored_path": str(restored_db),
+        "integrity_check": "ok",
+        "tables": tables,
+        "ledger": summary,
+        "order_sides": sides,
+        "production_db_unchanged": True,
+        "production_db_sha256": after_sha,
+    }
+
+
+def inspect_logs(log_path: Path = LOG_FILE, tail_lines: int = 200) -> dict:
+    log_dir = log_path.parent
+    rotated = []
+    if log_dir.is_dir():
+        for item in sorted(log_dir.glob(log_path.name + "*")):
+            if item.is_file() and not item.is_symlink():
+                rotated.append({"name": item.name, "size_bytes": item.stat().st_size})
+    if not log_path.is_file():
+        return {
+            "log_present": False,
+            "rotated_files": rotated,
+            "last_heartbeat_utc": None,
+            "last_heartbeat_state": None,
+            "last_state_transition": None,
+            "recent_error_count": 0,
+            "startup_runs_logged": 0,
+            "clean_stops_logged": 0,
+            "tail": [],
+        }
+
+    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    last_hb_ts = None
+    last_hb_state = None
+    last_state = None
+    starts = 0
+    stops = 0
+    for line in lines:
+        hb = HEARTBEAT_RE.match(line)
+        if hb:
+            last_hb_ts = parse_log_ts(hb.group("ts")).isoformat()
+            last_hb_state = hb.group("state")
+        st = STATE_CHANGE_RE.match(line)
+        if st:
+            last_state = st.group("state")
+            if last_state in ("RUNNING", "PAUSED"):
+                starts += 1
+            elif last_state == "STOPPED":
+                stops += 1
+        elif "Cleaning up modules ..." in line:
+            stops += 1
+
+    window = lines[-tail_lines:]
+    recent_errors = sum(1 for line in window if ERROR_LINE_RE.search(line))
+    return {
+        "log_present": True,
+        "rotated_files": rotated,
+        "last_heartbeat_utc": last_hb_ts,
+        "last_heartbeat_state": last_hb_state,
+        "last_state_transition": last_state,
+        "recent_error_count": recent_errors,
+        "startup_runs_logged": starts,
+        "clean_stops_logged": stops,
+        "tail": [sanitize_text(line) for line in lines[-25:]],
+    }
+
+
+def _container_api_call(
+    method: str, path: str, auth: dict | None = None, payload: dict | None = None,
+) -> tuple[int, object]:
+    headers = {"Accept": "application/json"}
+    if auth is not None:
+        token = base64.b64encode(f"{auth['username']}:{auth['password']}".encode("utf-8")).decode("ascii")
+        headers["Authorization"] = f"Basic {token}"
+    body = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        body = json.dumps(payload)
+
+    script = (
+        "import json, sys, urllib.error, urllib.request\n"
+        "req_in = json.loads(sys.stdin.read())\n"
+        "data = req_in['body'].encode('utf-8') if req_in['body'] is not None else None\n"
+        "req = urllib.request.Request(req_in['url'], data=data, headers=req_in['headers'], method=req_in['method'])\n"
+        "try:\n"
+        "    with urllib.request.urlopen(req, timeout=10) as resp:\n"
+        "        raw = resp.read().decode('utf-8', errors='replace')\n"
+        "        print(json.dumps({'status': resp.status, 'body': raw}))\n"
+        "except urllib.error.HTTPError as exc:\n"
+        "    raw = exc.read().decode('utf-8', errors='replace')\n"
+        "    print(json.dumps({'status': exc.code, 'body': raw}))\n"
+    )
+    request_spec = {
+        "method": method,
+        "url": f"http://127.0.0.1:8080/api/v1{path}",
+        "headers": headers,
+        "body": body,
+    }
+    proc = subprocess.run(
+        ["docker", "exec", "-i", CONTAINER_NAME, "python", "-c", script],
+        input=json.dumps(request_spec),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    envelope = json.loads(proc.stdout)
+    raw_body = envelope["body"]
+    try:
+        parsed = json.loads(raw_body) if raw_body else None
+    except json.JSONDecodeError:
+        parsed = raw_body
+    return int(envelope["status"]), parsed
+
+
+def load_api_auth(auth_path: Path = API_AUTH) -> dict:
+    if not auth_path.is_file() or auth_path.is_symlink():
+        raise ValueError("local API credentials are unavailable; start preflight with --local-api")
+    with auth_path.open(encoding="utf-8") as stream:
+        return read_settings(stream)
+
+
+def probe_live_api(now: datetime | None = None) -> dict:
+    current = now or datetime.now(timezone.utc)
+    auth = load_api_auth()
+    unauth_code, _ = _container_api_call("GET", "/show_config", auth=None)
+    if unauth_code != 401:
+        raise ValueError(f"local API failed authentication check: expected 401, got {unauth_code}")
+
+    cfg_code, show_cfg = _container_api_call("GET", "/show_config", auth=auth)
+    health_code, health = _container_api_call("GET", "/health", auth=auth)
+    wl_code, whitelist = _container_api_call("GET", "/whitelist", auth=auth)
+    if cfg_code != 200 or health_code != 200 or wl_code != 200 or not isinstance(show_cfg, dict):
+        raise ValueError("authenticated local API health/config probe failed")
+
+    pairs = whitelist.get("whitelist", []) if isinstance(whitelist, dict) else []
+    timeframe = show_cfg.get("timeframe", "1h")
+    candles = {}
+    import urllib.parse
+
+    for pair in pairs:
+        query = urllib.parse.urlencode({"pair": pair, "timeframe": timeframe, "limit": 2})
+        c_code, hist = _container_api_call("GET", f"/pair_candles?{query}", auth=auth)
+        if c_code == 200 and isinstance(hist, dict) and hist.get("length", 0) > 0:
+            close_ms = int(hist["data_stop_ts"]) + int(hist["timeframe_ms"])
+            age_s = current.timestamp() - (close_ms / 1000.0)
+            candles[pair] = {
+                "rows_loaded": int(hist["length"]),
+                "latest_candle_open_utc": hist.get("data_stop"),
+                "completed_candle_age_seconds": round(age_s, 2),
+            }
+        else:
+            candles[pair] = {"rows_loaded": 0, "latest_candle_open_utc": None, "completed_candle_age_seconds": None}
+
+    return {
+        "unauthenticated_http_status": unauth_code,
+        "dry_run": show_cfg.get("dry_run"),
+        "trading_mode": show_cfg.get("trading_mode"),
+        "force_entry_enable": show_cfg.get("force_entry_enable"),
+        "strategy": show_cfg.get("strategy"),
+        "state": show_cfg.get("state"),
+        "exchange": show_cfg.get("exchange"),
+        "stake_currency": show_cfg.get("stake_currency"),
+        "stake_amount": show_cfg.get("stake_amount"),
+        "max_open_trades": show_cfg.get("max_open_trades"),
+        "pairs": pairs,
+        "last_process_ts": health.get("last_process_ts") if isinstance(health, dict) else None,
+        "candles": candles,
+    }
+
+
+def reconcile_pending_entries(open_trades: list[dict], cancel_order_fn, reload_trade_fn) -> dict:
+    cancelled_entry_trades = []
+    preserved_exit_trades = []
+    reconciled_trade_ids = []
+    for trade in open_trades:
+        trade_id = int(trade["trade_id"])
+        orders = [order for order in trade.get("orders", []) if order.get("is_open")]
+        if not orders and not trade.get("has_open_orders"):
+            continue
+        sides = {order.get("ft_order_side") for order in orders}
+        if sides == {"buy"}:
+            cancel_order_fn(trade_id)
+            cancelled_entry_trades.append(trade_id)
+            reload_trade_fn(trade_id)
+            reconciled_trade_ids.append(trade_id)
+        else:
+            preserved_exit_trades.append({
+                "trade_id": trade_id,
+                "pair": trade.get("pair"),
+                "open_order_sides": sorted(str(side) for side in sides),
+            })
+    return {
+        "cancelled_entry_trade_ids": cancelled_entry_trades,
+        "reconciled_trade_ids": reconciled_trade_ids,
+        "preserved_exit_trades": preserved_exit_trades,
+    }
+
+
+def pause_entries() -> dict:
+    auth = load_api_auth()
+    code, msg = _container_api_call("POST", "/pause", auth=auth)
+    if code != 200:
+        raise ValueError(f"pause endpoint failed with HTTP {code}: {msg}")
+    st_code, open_trades = _container_api_call("GET", "/status", auth=auth)
+    if st_code != 200 or not isinstance(open_trades, list):
+        raise ValueError("unable to read open trades after pause")
+
+    def cancel_fn(trade_id: int) -> None:
+        # Cancelling an unfilled initial entry deletes the zero-amount trade, which can return 400/404 on readback.
+        c_code, _ = _container_api_call("DELETE", f"/trades/{trade_id}/open-order", auth=auth)
+        if c_code not in (200, 400, 404, 502):
+            raise ValueError(f"unexpected status {c_code} cancelling open entry on trade {trade_id}")
+
+    def reload_fn(trade_id: int) -> None:
+        _container_api_call("POST", f"/trades/{trade_id}/reload", auth=auth)
+
+    reconciliation = reconcile_pending_entries(open_trades, cancel_fn, reload_fn)
+    _, cfg_after = _container_api_call("GET", "/show_config", auth=auth)
+    _, trades_after = _container_api_call("GET", "/status", auth=auth)
+    state_after = cfg_after.get("state") if isinstance(cfg_after, dict) else None
+    if str(state_after).lower() != "paused":
+        raise ValueError(f"expected paused bot state after pause, got {state_after!r}")
+    remaining_entry_orders = 0
+    if isinstance(trades_after, list):
+        for trade in trades_after:
+            for order in trade.get("orders", []):
+                if order.get("is_open") and order.get("ft_order_side") == "buy":
+                    remaining_entry_orders += 1
+    if remaining_entry_orders:
+        raise ValueError(f"{remaining_entry_orders} open buy entry orders remain after pause")
+    return {
+        "action": "entry_pause",
+        "pause_response": msg,
+        "verified_state": state_after,
+        "exit_supervision_active": True,
+        "reconciliation": reconciliation,
+        "remaining_open_entry_orders": remaining_entry_orders,
+        "paper_ledger": ledger(DB) if DB.exists() else None,
+    }
+
+
+def resume_entries() -> dict:
+    auth = load_api_auth()
+    _, show_cfg = _container_api_call("GET", "/show_config", auth=auth)
+    if not isinstance(show_cfg, dict) or show_cfg.get("dry_run") is not True or show_cfg.get("trading_mode") != "spot":
+        raise ValueError("refusing to resume: live API did not confirm spot dry_run=true")
+    code, msg = _container_api_call("POST", "/start", auth=auth)
+    if code != 200:
+        raise ValueError(f"start endpoint failed with HTTP {code}: {msg}")
+    _, after = _container_api_call("GET", "/show_config", auth=auth)
+    state_after = after.get("state") if isinstance(after, dict) else None
+    if str(state_after).lower() != "running":
+        raise ValueError(f"expected running state after resume, got {state_after!r}")
+    return {"action": "entry_resume", "resume_response": msg, "verified_state": state_after}
+
+
+def evaluate_alerts(
+    snapshot: dict,
+    now: datetime | None = None,
+    max_heartbeat_age: float = DEFAULT_MAX_HEARTBEAT_AGE,
+    max_candle_age: float = DEFAULT_MAX_CANDLE_AGE,
+    min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
+    error_threshold: int = DEFAULT_ERROR_THRESHOLD,
+) -> list[dict]:
+    current = now or datetime.now(timezone.utc)
+    alerts = []
+    container_state = snapshot.get("container_state")
+    logs = snapshot.get("log_health") or {}
+    hb_utc = logs.get("last_heartbeat_utc")
+
+    if container_state == "running":
+        if hb_utc is None:
+            started = snapshot.get("container_started")
+            age = (current - parse_utc_iso(started)).total_seconds() if started else max_heartbeat_age + 1
+            if age > max_heartbeat_age:
+                alerts.append({
+                    "code": "failed_heartbeat",
+                    "detail": f"container running for {round(age, 1)}s without a logged heartbeat",
+                })
+        else:
+            hb_age = (current - parse_utc_iso(hb_utc)).total_seconds()
+            if hb_age > max_heartbeat_age:
+                alerts.append({
+                    "code": "failed_heartbeat",
+                    "detail": f"last heartbeat is {round(hb_age, 1)}s old (limit {max_heartbeat_age}s)",
+                })
+
+    api = snapshot.get("live_api")
+    if isinstance(api, dict):
+        for pair, info in (api.get("candles") or {}).items():
+            candle_age = info.get("completed_candle_age_seconds")
+            if info.get("rows_loaded", 0) == 0 or candle_age is None:
+                alerts.append({
+                    "code": "stale_feed",
+                    "detail": f"{pair} has no loaded candles in dataprovider",
+                })
+            elif candle_age > max_candle_age:
+                alerts.append({
+                    "code": "stale_feed",
+                    "detail": f"{pair} completed candle age {round(candle_age, 1)}s exceeds {max_candle_age}s",
+                })
+
+    errors = int(logs.get("recent_error_count") or 0)
+    if errors >= error_threshold:
+        alerts.append({
+            "code": "repeated_errors",
+            "detail": f"{errors} ERROR/CRITICAL log lines in recent window (threshold {error_threshold})",
+        })
+
+    free_bytes = int(snapshot.get("free_disk_bytes") or 0)
+    if free_bytes < min_free_bytes:
+        alerts.append({
+            "code": "disk_pressure",
+            "detail": f"free disk {free_bytes} bytes is below {min_free_bytes} bytes",
+        })
+
+    restart_count = int(snapshot.get("container_restart_count") or 0)
+    exit_code = snapshot.get("container_exit_code")
+    launches = int(snapshot.get("launch_manifest_count") or 0)
+    clean_stops = int(logs.get("clean_stops_logged") or 0)
+    if restart_count > 0 or (exit_code not in (None, 0)):
+        alerts.append({
+            "code": "restart_detected",
+            "detail": f"container restart_count={restart_count}, exit_code={exit_code}",
+        })
+    elif container_state == "absent" and launches > 0 and clean_stops == 0 and logs.get("startup_runs_logged", 0) > 0:
+        alerts.append({
+            "code": "restart_detected",
+            "detail": "container is absent after startup without a clean shutdown log marker",
+        })
+
+    guard_info = snapshot.get("guard_health")
+    if isinstance(guard_info, dict) and guard_info.get("policy_present"):
+        latch = guard_info.get("latch")
+        if latch is not None:
+            alerts.append({
+                "code": "guard_latched",
+                "detail": f"daily entry guard latched: {latch}",
+            })
+        elif container_state == "running" and not guard_info.get("entries_allowed"):
+            alerts.append({
+                "code": "guard_stale",
+                "detail": "guard lease expired or missing snapshot while container is running",
+            })
+        if guard_info.get("enforcement_pending"):
+            alerts.append({
+                "code": "guard_enforcement_pending",
+                "detail": "guard latch awaits API pause or pending-entry cancellation reconciliation",
+            })
+
+    return alerts
+
+
+def inspect_guard(now: datetime | None = None) -> dict:
+    if not GUARD_POLICY.is_file() or GUARD_POLICY.is_symlink():
+        return {"policy_present": False}
+    import sys
+    from datetime import timedelta
+    from decimal import Decimal
+
+    risk_dir = str(Path(__file__).resolve().parents[1] / "risk")
+    if risk_dir not in sys.path:
+        sys.path.insert(0, risk_dir)
+    from guard import Guard
+
+    with GUARD_POLICY.open(encoding="utf-8") as stream:
+        policy = read_settings(stream)
+    ratio = policy.get("max_loss_ratio")
+    guard = Guard(
+        path=GUARD_STATE,
+        account=str(policy["account"]),
+        max_loss=Decimal(str(policy["max_loss_quote"])),
+        max_age=timedelta(seconds=float(policy["max_age_seconds"])),
+        max_loss_ratio=Decimal(str(ratio)) if ratio is not None else None,
+    )
+    current = now or datetime.now(timezone.utc)
+    allowed = guard.entries_allowed(current)
+    state = None
+    if GUARD_STATE.is_file() and not GUARD_STATE.is_symlink():
+        try:
+            state = json.loads(GUARD_STATE.read_text(encoding="utf-8"))
+        except Exception:
+            state = {"corrupt": True}
+    return {
+        "policy_present": True,
+        "account": policy.get("account"),
+        "max_loss_quote": policy.get("max_loss_quote"),
+        "max_age_seconds": policy.get("max_age_seconds"),
+        "entries_allowed": allowed,
+        "latch": state.get("latch") if isinstance(state, dict) else "unreadable_state",
+        "loss": state.get("loss") if isinstance(state, dict) else None,
+        "opening_equity": state.get("opening_equity") if isinstance(state, dict) else None,
+        "latest_equity": state.get("latest_equity") if isinstance(state, dict) else None,
+        "last_observed_at": state.get("last_observed_at") if isinstance(state, dict) else None,
+        "enforcement_pending": state.get("enforcement_pending") if isinstance(state, dict) else False,
+        "last_enforcement": state.get("last_enforcement") if isinstance(state, dict) else None,
+    }
+
+
+def status(
+    max_heartbeat_age: float = DEFAULT_MAX_HEARTBEAT_AGE,
+    max_candle_age: float = DEFAULT_MAX_CANDLE_AGE,
+    min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
+    error_threshold: int = DEFAULT_ERROR_THRESHOLD,
+) -> dict:
+    process = subprocess.run([
+        "docker", "inspect", "--type", "container",
+        "--format", "{{json .}}", CONTAINER_NAME,
+    ], capture_output=True, text=True)
+    if process.returncode and "no such" not in process.stderr.lower():
+        raise ValueError("unable to inspect the paper container; check Docker access")
+    inspected = json.loads(process.stdout) if process.returncode == 0 else None
+    state = inspected.get("State", {}) if inspected else None
+    manifests = sorted(PAPER_DIR.glob("launch-*.json")) if PAPER_DIR.is_dir() else []
+    log_health = inspect_logs(LOG_FILE)
+    live_api = None
+    if state and state.get("Status") == "running" and API_AUTH.is_file():
+        try:
+            live_api = probe_live_api()
+        except Exception as exc:
+            live_api = {"probe_error": sanitize_text(str(exc))}
+
+    guard_health = inspect_guard()
+    active_strategy = live_api.get("strategy") if isinstance(live_api, dict) else None
+    guard_label = (
+        "persisted_entry_halt_active_not_hard_loss_guarantee"
+        if (active_strategy == "PersonalSpotGuarded" or guard_health.get("policy_present"))
+        else "not_integrated_no_daily_loss_enforcement_claimed"
+    )
+    snapshot = {
+        "container_state": state["Status"] if state else "absent",
+        "container_started": state.get("StartedAt") if state else None,
+        "container_exit_code": state.get("ExitCode") if state and state.get("Status") != "running" else None,
+        "container_restart_count": inspected.get("RestartCount", 0) if inspected else 0,
+        "launch_manifest_count": len(manifests),
+        "paper_ledger": ledger(DB) if DB.exists() else None,
+        "order_sides": order_side_breakdown(DB) if DB.exists() else None,
+        "log_health": {k: v for k, v in log_health.items() if k != "tail"},
+        "guard_health": guard_health,
+        "live_api": live_api,
+        "free_disk_bytes": shutil.disk_usage(PAPER_DIR.parent if PAPER_DIR.exists() else Path.cwd()).free,
+        "guard_enforcement": guard_label,
+        "external_notifications": "disabled_requires_user_authorized_destination",
+    }
+    snapshot["alerts"] = evaluate_alerts(
+        snapshot,
+        max_heartbeat_age=max_heartbeat_age,
+        max_candle_age=max_candle_age,
+        min_free_bytes=min_free_bytes,
+        error_threshold=error_threshold,
+    )
+    return snapshot
+
+
+def export_sanitized_bundle(destination: Path) -> dict:
+    current_status = status()
+    log_info = inspect_logs(LOG_FILE)
+    manifests = []
+    if PAPER_DIR.is_dir():
+        for item in sorted(PAPER_DIR.glob("launch-*.json"))[-5:]:
+            with item.open(encoding="utf-8") as stream:
+                manifests.append({"name": item.name, "manifest": read_settings(stream)})
+    bundle = sanitize_value({
+        "exported_at_utc": datetime.now(timezone.utc).isoformat(),
+        "status": current_status,
+        "recent_launches": manifests,
+        "recent_log_tail": log_info.get("tail", []),
+    })
+    fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(bundle, stream, indent=2)
+        stream.write("\n")
+    return {"exported_to": str(destination), "alerts": bundle["status"]["alerts"]}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "action",
+        choices=(
+            "status", "verify-api", "pause", "resume",
+            "backup", "verify-backup", "restore-drill", "export",
+        ),
+    )
+    parser.add_argument("target_path", nargs="?", type=Path)
+    parser.add_argument("isolated_dir", nargs="?", type=Path)
+    parser.add_argument("--max-heartbeat-age", type=float, default=DEFAULT_MAX_HEARTBEAT_AGE)
+    parser.add_argument("--max-candle-age", type=float, default=DEFAULT_MAX_CANDLE_AGE)
+    parser.add_argument("--min-free-bytes", type=int, default=DEFAULT_MIN_FREE_BYTES)
+    parser.add_argument("--error-threshold", type=int, default=DEFAULT_ERROR_THRESHOLD)
+    args = parser.parse_args()
+
+    needs_target = {"backup", "verify-backup", "restore-drill", "export"}
+    if (args.action in needs_target) != (args.target_path is not None):
+        parser.error(f"{args.action} requires a path argument" if args.action in needs_target else f"{args.action} takes no path argument")
+    if (args.action == "restore-drill") != (args.isolated_dir is not None):
+        parser.error("restore-drill requires both <backup_path> and <isolated_dir>")
+
+    try:
+        check_paper_paths(BASELINE)
+        if args.action == "status":
+            print(json.dumps(status(
+                max_heartbeat_age=args.max_heartbeat_age,
+                max_candle_age=args.max_candle_age,
+                min_free_bytes=args.min_free_bytes,
+                error_threshold=args.error_threshold,
+            ), indent=2))
+        elif args.action == "verify-api":
+            print(json.dumps(probe_live_api(), indent=2))
+        elif args.action == "pause":
+            print(json.dumps(pause_entries(), indent=2))
+        elif args.action == "resume":
+            print(json.dumps(resume_entries(), indent=2))
+        elif args.action == "backup":
+            backup(args.target_path)
+            print(f"Paper SQLite backup created at {args.target_path}")
+        elif args.action == "verify-backup":
+            with closing(connect_readonly(args.target_path)) as copy:
+                if copy.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                    raise ValueError("backup failed SQLite quick_check")
+            print(json.dumps(ledger(args.target_path), indent=2))
+        elif args.action == "restore-drill":
+            print(json.dumps(restore_drill(args.target_path, args.isolated_dir), indent=2))
+        elif args.action == "export":
+            print(json.dumps(export_sanitized_bundle(args.target_path), indent=2))
+    except (OSError, ValueError, sqlite3.Error, subprocess.CalledProcessError) as exc:
+        parser.exit(2, f"Paper operations check failed: {exc}\n")
+
+
+if __name__ == "__main__":
+    main()

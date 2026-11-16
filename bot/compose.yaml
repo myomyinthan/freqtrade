@@ -6,6 +6,7 @@ services:
     init: true
     volumes:
       - ./configs/base.example.json:/freqtrade/bot/configs/base.example.json:ro
+      - ./risk:/freqtrade/bot/risk:ro
       - ./scripts:/freqtrade/bot/scripts:ro
       - ./strategies:/freqtrade/bot/strategies:ro
       - type: bind
