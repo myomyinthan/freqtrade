@@ -1,0 +1,29 @@
+name: Personal spot checks
+on:
+  push:
+    branches: ["bot/**"]
+    paths: ["bot/**", ".github/workflows/personal-spot.yml"]
+  pull_request:
+    branches: ["bot/**"]
+    paths: ["bot/**", ".github/workflows/personal-spot.yml"]
+permissions:
+  contents: read
+jobs:
+  offline-checks:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check local configuration and pinned Compose image
+        run: |
+          set -euo pipefail
+          python3 -m json.tool bot/VERSION.lock.json >/dev/null
+          image=$(python3 -c 'import json; print(json.load(open("bot/VERSION.lock.json"))["image"])')
+          [[ "$image" =~ ^docker.io/freqtradeorg/freqtrade@sha256:[a-f0-9]{64}$ ]]
+          test "$(docker compose -f bot/compose.yaml config --images | sort -u)" = "$image"
+          git check-ignore bot/configs/pilot.local.json bot/secrets/fixture.json bot/runtime/paper/trades.paper.sqlite
+          if git ls-files bot | grep -Eq '^bot/(runtime|secrets|reports)/|\.local\.json$'; then exit 1; fi
+          docker run --rm --network none --entrypoint python \
+            -v "$PWD/bot:/project:ro" "$image" -m unittest discover -s /project/tests -v

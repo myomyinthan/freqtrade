@@ -1,0 +1,19 @@
+{
+  "hypothesis": "H001",
+  "dataset_manifest_sha256": null,
+  "effective_config_sha256": null,
+  "strategy_sha256": null,
+  "fee_per_side": null,
+  "windows": {
+    "train": null,
+    "validation": null,
+    "test": null,
+    "walk-forward-1": null
+  },
+  "screening": {
+    "maximum_drawdown": null,
+    "maximum_stressed_loss": null,
+    "minimum_trades": null,
+    "maximum_single_pair_profit_share": null
+  }
+}
