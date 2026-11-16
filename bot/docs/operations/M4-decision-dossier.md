@@ -33,7 +33,7 @@ Because **engineering readiness does not substitute for positive economic expect
 | Historical evaluation | `bot/docs/research/H001-…`, `H002-…`, `H003-binance-usdt-spot-report.md` | `H001` FAIL; `H002` +2.40% dev; **`H003` PASSED untouched holdout (`+1.76%` vs `-12.41%` mkt, PF `3.90`, `1.28%` wallet DD; holdout now consumed)** |
 | Automated test suite | `bot/tests/test_*.py` (`43` tests) | `43 / 43` passed inside pinned container with `--network none` |
 | B17 continuity audit | `bot/scripts/pilot_audit.py` | Live pilot reports `observing_in_progress` (cash regime; `0` natural trades yet; no uptime gaps while running) |
-| B20 host bundle | `bot/deploy/systemd/` | Credential-free, zero-host-port units + README; not yet installed on an always-on host |
+| B20 host bundle | `bot/deploy/systemd/`, `bot/deploy/launchd/` | Linux units remain uninstalled (no always-on host). macOS `launchd` install rolls back while the checkout is under `Documents`; `host_supervise.py session` is the awake-session supervisor |
 
 ---
 
@@ -43,7 +43,7 @@ Because **engineering readiness does not substitute for positive economic expect
 2. **Polling guard is not a hard loss cap:** `guard_runner.py` halts *new* entries within `~10s` (or `<=30s` lease expiry if the guard daemon dies) and cancels open `buy` orders, while open spot holdings remain exposed to adverse price gaps, exchange outages, or off-exchange stoploss delays.
 3. **Simulated fills vs. live book microstructure:** Candle backtests and dry-run order-book top-1 fills do not prove queue priority, partial-fill dust handling, API rate-limit throttling under volatility, or exchange maintenance behavior.
 4. **Unverified operator jurisdiction & fee tier:** Public `api.binance.com` market data succeeded without credentials; personal Binance account eligibility, KYC/jurisdiction compliance, IP-restricted spot-only API keys (withdrawals disabled), and actual maker/taker fee tier remain unverified.
-5. **Local laptop sleep:** Continuous 24/7 operation cannot be claimed on a sleeping laptop; an always-on host requires an explicit hosting & budget decision.
+5. **Local laptop sleep:** Continuous 24/7 operation cannot be claimed on a sleeping laptop. `launchd` cannot read this checkout under `Documents` without Full Disk Access, so awake-session supervision uses `host_supervise.py session` instead. An always-on host still requires an explicit hosting and budget decision before the `B17` window can be treated as continuous.
 
 ---
 

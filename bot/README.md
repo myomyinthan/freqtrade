@@ -75,7 +75,7 @@ python3 bot/scripts/paper_status.py export bot/runtime/paper/sanitized-status.js
 
 ## Operate with the persisted daily entry-halt guard (`M4`)
 
-Initialize `guard.policy.json`, register the UTC day baseline when starting mid-day on a reconciled ledger, keep `guard_runner.py watch` running in a separate process (`10s` poll, `30s` lease), and launch `--strategy PersonalSpotMacroBreakoutGuarded --local-api` for the active `H003` paper pilot (or an earlier guarded hypothesis). It halts new entries fail-closed without claiming a guaranteed monetary loss ceiling on open positions. Always-on host units live under `bot/deploy/systemd/`.
+Initialize `guard.policy.json`, register the UTC day baseline when starting mid-day on a reconciled ledger, keep `guard_runner.py watch` running in a separate process (`10s` poll, `30s` lease), and launch `--strategy PersonalSpotMacroBreakoutGuarded --local-api` for the active `H003` paper pilot (or an earlier guarded hypothesis). It halts new entries fail-closed without claiming a guaranteed monetary loss ceiling on open positions. Always-on Linux units live under `bot/deploy/systemd/`. This Mac can supervise the awake session with `python3 bot/scripts/host_supervise.py session` (`bot/deploy/launchd/`); sleep still breaks a continuous-uptime claim.
 
 ```sh
 python3 bot/scripts/guard_runner.py init "$settings" --max-loss-quote 25 --max-age-seconds 30 --poll-interval-seconds 10
